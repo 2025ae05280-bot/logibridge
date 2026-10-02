@@ -12,7 +12,7 @@
 
     - name: 2. Copy optimized TFLite model binary execution asset
       copy:
-        src: ../training/models/model_ptq.tflite
+        src: ../inference/model.tflite
         dest: /opt/logibridge/model.tflite
         mode: '0644'
 
