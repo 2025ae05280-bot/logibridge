@@ -7,7 +7,7 @@ import argparse
 import paho.mqtt.client as mqtt
 
 def run_sensor_simulator(anomaly_mode):
-    MQTT_BROKER = "localhost"
+    MQTT_BROKER = "mqtt_broker"
     MQTT_PORT = 1883
     CLIENT_ID = "logiedge_truck_sensor_sim"
     
