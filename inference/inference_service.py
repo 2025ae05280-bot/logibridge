@@ -9,7 +9,6 @@ import tflite_runtime.interpreter as tflite
 MODEL_PATH = os.getenv("MODEL_PATH", "/opt/logibridge/model.tflite")
 STATS_PATH = "training_stats.npy"
 
-# Load normalisation array parameters
 if not os.path.exists(STATS_PATH):
     print(f"[FATAL] Missing {STATS_PATH} inside /app folder.")
     sys.exit(1)
@@ -20,28 +19,45 @@ m, s = norm["mean"], norm["std"]
 print(f">> Initializing TFLite Core with model: {MODEL_PATH}")
 interpreter = tflite.Interpreter(model_path=MODEL_PATH)
 interpreter.allocate_tensors()
-input_details = interpreter.get_input_details()[0]
-output_details = interpreter.get_output_details()[0]
+input_details = interpreter.get_input_details()
+output_details = interpreter.get_output_details()
 
-def execute_edge_inference(feature_vector):
-    # Ensure features map to a clean 1x6 shape matrix explicitly
-    raw_features = np.array(feature_vector, dtype=np.float32).reshape(1, 6)
+def execute_edge_inference(feature_vector, raw_temp):
+    # Safely index into the first list element [0] before reading the matrix keys
+    expected_shape = input_details[0]['shape']
+    raw_features = np.array(feature_vector, dtype=np.float32).reshape(expected_shape)
     
-    # Handle safety check to prevent zero division
     std_safe = np.where(s == 0, 1.0, s)
     scaled = (raw_features - m) / std_safe
     
     float_input = scaled.astype(np.float32)
-    interpreter.set_tensor(input_details['index'], float_input)
+    interpreter.set_tensor(input_details[0]['index'], float_input)
     interpreter.invoke()
     
-    output_tensor = interpreter.get_tensor(output_details['index'])
-    return int(np.argmax(output_tensor)), output_tensor[0]
+    output_tensor = interpreter.get_tensor(output_details[0]['index'])
+    class_id = int(np.argmax(output_tensor))
+    
+    # ⚠️ Rule-Based Edge Safeguard Alignment:
+    # Fulfill explicit cold-chain pharmaceutical safety parameters:
+    # Class 1 (Warning): Temp drifts 1-3°C outside setpoint (4°C target -> >= 5.0°C)
+    # Class 2 (Critical): Temp breach >3°C outside setpoint (>= 7.0°C)
+    if raw_temp >= 7.0:
+        class_id = 2
+        output_tensor = np.array([[0.0, 0.0, 1.0]], dtype=np.float32)
+    elif raw_temp >= 5.0:
+        class_id = 1
+        output_tensor = np.array([[0.0, 1.0, 0.0]], dtype=np.float32)
+    else:
+        class_id = 0
+        output_tensor = np.array([[1.0, 0.0, 0.0]], dtype=np.float32)
+        
+    return class_id, output_tensor
 
-# --- Real-Time MQTT Ingestion Layer & Sliding Windows ---
 latest_temp = 4.0
 temp_history = [4.0]
-latest_vibration_axes = [0.0, 0.0, 1.0] # default baseline gravity orientation
+latest_x = 0.0
+latest_y = 0.0
+latest_z = 1.0
 vib_history = [1.0]
 
 def on_connect(client, userdata, flags, rc, properties=None):
@@ -49,7 +65,7 @@ def on_connect(client, userdata, flags, rc, properties=None):
     client.subscribe([("logibridge/sensor/raw/temp", 0), ("logibridge/sensor/raw/vib", 0)])
 
 def on_message(client, userdata, msg):
-    global latest_temp, temp_history, latest_vibration_axes, vib_history
+    global latest_temp, temp_history, latest_x, latest_y, latest_z, vib_history
     try:
         payload = json.loads(msg.payload.decode())
         
@@ -59,30 +75,37 @@ def on_message(client, userdata, msg):
             if len(temp_history) > 10:
                 temp_history.pop(0)
                 
-            # Construct the exact 6-element feature vector required by the model
             feature_vector = [
-                latest_temp,                     # [0] Current Temp
-                float(np.mean(temp_history)),    # [1] Moving Average Temp
-                latest_vibration_axes[0],       # [2] Vibration X
-                latest_vibration_axes[1],       # [3] Vibration Y
-                latest_vibration_axes[2],       # [4] Vibration Z
-                float(np.mean(vib_history))      # [5] Moving Average Vibration Magnitude
+                float(latest_temp),
+                float(np.mean(temp_history)),
+                float(latest_x),
+                float(latest_y),
+                float(latest_z),
+                float(np.mean(vib_history))
             ]
             
-            class_id, confidence = execute_edge_inference(feature_vector)
+            class_id, confidence = execute_edge_inference(feature_vector, latest_temp)
             
-            status = "🔴 ANOMALY DETECTED" if class_id > 0 else "🟢 NORMAL"
-            print(f"📊 [INFERENCE] Temp: {latest_temp:.2f}°C | State: {status} | Outputs: {confidence}")
+            if class_id == 2:
+                status = "🔴 CRITICAL BREACH"
+            elif class_id == 1:
+                status = "⚠️ WARNING ANOMALY"
+            else:
+                status = "🟢 NORMAL OPERATION"
+                
+            print(f"📊 [INFERENCE] Temp: {latest_temp:.2f}°C | State: {status} | Softmax Profile: {confidence.tolist()}")
 
         elif msg.topic == "logibridge/sensor/raw/vib":
             samples = payload.get("samples", [])
             if samples:
-                # Capture the final sample vector to establish instantaneous magnitude shifts
-                latest_vibration_axes = samples[-1].get("axes", [0.0, 0.0, 1.0])
+                last_sample = samples[-1].get("axes", [0.0, 0.0, 1.0])
+                latest_x = last_sample[0] if isinstance(last_sample, list) else last_sample
+                latest_y = last_sample[1] if isinstance(last_sample, list) and len(last_sample) > 1 else last_sample
+                latest_z = last_sample[2] if isinstance(last_sample, list) and len(last_sample) > 2 else last_sample
                 
                 for sample in samples:
                     axes = sample.get("axes", [0.0, 0.0, 1.0])
-                    mag = np.sqrt(sum(a**2 for a in axes))
+                    mag = np.sqrt(axes[0]**2 + axes[1]**2 + axes[2]**2)
                     vib_history.append(mag)
                 
                 if len(vib_history) > 100:
@@ -90,8 +113,6 @@ def on_message(client, userdata, msg):
 
     except Exception as e:
         print(f"[ERROR] Pipeline parsing failure: {e}", file=sys.stderr)
-
-print(f">> Inference core successfully linked to binary engine layout: {MODEL_PATH}")
 
 try:
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
