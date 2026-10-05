@@ -6,7 +6,7 @@ The runnable code is the source of truth for names and payloads.
 
 - DEC-1: retain v1.0 names and topics; v1.1 adds `seq`, `p_normal`, and split CSV files.
 - DEC-2: `temp_drift` caps at setpoint +2.5 °C; `combined` continues to a Critical-range bias.
-- DEC-3: PSI monitors `p_normal` (`probs[0]`), not max-softmax confidence.
+- DEC-3: PSI monitors the assignment-required `confidence` score (`max(probs)`). `p_normal` remains available as an additional diagnostic field.
 - DEC-4: `--fast` changes wall-clock speed while simulated timestamps remain one second apart.
 - DEC-5: the model decides; a ±3 °C safety interlock may escalate only.
 - DEC-6: host inference uses TensorFlow Lite when `tflite-runtime` is unavailable; the container uses `tflite-runtime`.
@@ -17,7 +17,7 @@ The runnable code is the source of truth for names and payloads.
 
 ## Inference payload
 
-Inference publishes `probs`, `confidence` (display only), `p_normal` (PSI input), `model_class`, `final_class`, `source`, `features`, `latency_ms`, and `model_version`.
+Inference publishes `probs`, `confidence` (PSI input), `p_normal` (diagnostic), `model_class`, `final_class`, `source`, `features`, `latency_ms`, and `model_version`.
 
 ## Runtime defaults
 

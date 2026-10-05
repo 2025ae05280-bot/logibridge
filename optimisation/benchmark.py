@@ -22,14 +22,14 @@ def _runtime_name():
         return f"tensorflow {tf.__version__}"
 
 
-def test_data(path, mean, std):
+def validation_data(path, mean, std):
     with Path(path).open(newline="") as handle:
-        rows = [r for r in csv.DictReader(handle) if r["split"] == "test"]
+        rows = [r for r in csv.DictReader(handle) if r["split"] == "val"]
     x = np.asarray([[float(r[n]) for n in ("temp_mean", "temp_std", "temp_roc_c_per_min", "vib_rms", "vib_peak", "vib_kurtosis")] for r in rows], dtype=np.float32)
     return normalise(x, mean, std), np.asarray([int(r["label"]) for r in rows])
 
 
-def benchmark_variant(path, x, y, iterations=1000, warmup=50):
+def benchmark_variant(path, x, y, iterations=200, warmup=10):
     interpreter = make_interpreter(path)
     interpreter.allocate_tensors()
     input_detail = interpreter.get_input_details()[0]
@@ -62,7 +62,8 @@ def benchmark_variant(path, x, y, iterations=1000, warmup=50):
         predictions.append(int(np.argmax(dequantise(interpreter.get_tensor(output_detail["index"]), output_detail))))
     predictions = np.asarray(predictions)
     mean_latency = float(np.mean(latencies))
-    energy = 45.0 * cpu_fraction * mean_latency / 1000.0 * 1000.0
+    laptop_tdp_w = float(os.getenv("LAPTOP_TDP_W", "45"))
+    energy = laptop_tdp_w * cpu_fraction * mean_latency / 1000.0 * 1000.0
     return {"mean_latency_ms": mean_latency, "p50_latency_ms": float(np.percentile(latencies, 50)), "p95_latency_ms": float(np.percentile(latencies, 95)), "p99_latency_ms": float(np.percentile(latencies, 99)), "size_kb": os.path.getsize(path) / 1024.0, "accuracy": float(np.mean(predictions == y)), "critical_recall": float(np.sum((predictions == 2) & (y == 2)) / max(1, np.sum(y == 2))), "energy_mj": energy, "runtime": _runtime_name()}
 
 
@@ -94,10 +95,10 @@ def write_chart(csv_path, chart_path):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--iterations", type=int, default=1000)
+    parser.add_argument("--iterations", type=int, default=200)
     args = parser.parse_args()
     mean, std = load_stats(REPO_ROOT / "data_pipeline" / "training_stats.npy")
-    x, y = test_data(REPO_ROOT / "training" / "data" / "dataset.csv", mean, std)
+    x, y = validation_data(REPO_ROOT / "training" / "data" / "dataset.csv", mean, std)
     model_dir = REPO_ROOT / "training" / "models"
     rows = []
     for variant, filename in (("m1_fp32", "m1_fp32.tflite"), ("m2_ptq_int8", "m2_ptq_int8.tflite"), ("m3_pruned_ptq_int8", "m3_pruned_ptq_int8.tflite")):

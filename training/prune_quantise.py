@@ -31,6 +31,7 @@ def structured_model(base):
 
 def main():
     import tensorflow as tf
+    import tensorflow_model_optimization as tfmot
     from training.convert_ptq import convert
 
     mean, std = load_stats(REPO_ROOT / "data_pipeline" / "training_stats.npy")
@@ -39,7 +40,27 @@ def main():
     val_x, val_y = load_split(dataset, "val")
     train_x, val_x = normalise(train_x, mean, std), normalise(val_x, mean, std)
     base = tf.keras.models.load_model(REPO_ROOT / "training" / "models" / "m1_fp32.keras")
-    model = structured_model(base)
+    steps = 10 * int(np.ceil(len(train_y) / 32))
+    pruning = tfmot.sparsity.keras.prune_low_magnitude(
+        base,
+        pruning_schedule=tfmot.sparsity.keras.PolynomialDecay(
+            initial_sparsity=0.0,
+            final_sparsity=0.35,
+            begin_step=0,
+            end_step=steps,
+        ),
+    )
+    pruning.compile(optimizer="adam", loss="sparse_categorical_crossentropy", metrics=["accuracy"])
+    pruning.fit(
+        train_x,
+        train_y,
+        validation_data=(val_x, val_y),
+        epochs=10,
+        batch_size=32,
+        callbacks=[tfmot.sparsity.keras.UpdatePruningStep()],
+        verbose=0,
+    )
+    model = structured_model(tfmot.sparsity.keras.strip_pruning(pruning))
     model.compile(optimizer="adam", loss="sparse_categorical_crossentropy", metrics=["accuracy"])
     model.fit(train_x, train_y, validation_data=(val_x, val_y), epochs=10, batch_size=32, verbose=0)
     pred = np.argmax(model.predict(val_x, verbose=0), axis=1)

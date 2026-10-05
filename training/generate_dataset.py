@@ -14,7 +14,8 @@ from data_pipeline.simulator import SensorSimulator
 MODES = (("none", 0), ("temp_drift", 1), ("vibration", 1), ("combined", 2), ("cooling_fault", 2))
 
 
-def generate_run(mode, run_id, duration_s=15 * 60):
+def generate_run(mode, run_id, duration_s=None):
+    duration_s = 20 * 60 if mode == "none" else 15 * 60 if duration_s is None else duration_s
     simulator = SensorSimulator(mode, f"T{run_id:02d}", seed=run_id)
     extractor = WindowFeatureExtractor()
     rows = []

@@ -4,5 +4,5 @@
   "proportions": [0.05, 0.05, 0.10, 0.80],
   "n": 0,
   "model_version": "m1_fp32",
-  "score": "p_normal"
+  "score": "confidence"
 }

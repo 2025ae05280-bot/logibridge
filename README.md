@@ -21,7 +21,7 @@ The training generator and live service share `SensorSimulator` and `WindowFeatu
 python -m data_pipeline.simulator --anomaly none --truck-id T01 --seed 7
 MODEL_PATH=training/models/m2_ptq_int8.tflite python -m inference.inference_service
 python -m monitoring.drift_monitor build-reference --truck-id T01 --n 300
-python -m monitoring.drift_monitor monitor --truck-id T01 --window 100
+python -m monitoring.drift_monitor monitor --truck-id T01 --window 100 --every 60
 ```
 
 The service publishes inference at `logibridge/trucks/{id}/inference`, alerts at `.../alerts`, and retained status at `.../status`. SQLite stores every emitted window and alert; the sync worker forwards unsynced alert IDs to the ops topic when configured.

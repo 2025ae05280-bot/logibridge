@@ -28,7 +28,8 @@ def psi(expected, actual, epsilon=1e-4):
 
 
 def save_reference(path, values, model_version=MODEL_VERSION):
-    data = {"bins": proportions(values).round(8).tolist(), "edges": EDGES.tolist(), "proportions": proportions(values).round(8).tolist(), "n": len(values), "model_version": model_version, "score": "p_normal"}
+    bins = proportions(values).round(8).tolist()
+    data = {"bins": bins, "edges": EDGES.tolist(), "proportions": bins, "n": len(values), "model_version": model_version, "score": "confidence"}
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     Path(path).write_text(json.dumps(data, indent=2))
 
@@ -71,7 +72,7 @@ def build_reference(args):
     values = []
     def on_message(client, userdata, msg):
         try:
-            value = json.loads(msg.payload.decode())["p_normal"]
+            value = json.loads(msg.payload.decode())["confidence"]
             values.append(float(value))
         except (KeyError, ValueError, json.JSONDecodeError):
             return
@@ -88,12 +89,21 @@ def build_reference(args):
 
 def monitor(args):
     monitor = PSIDriftMonitor(args.reference, args.window)
+    last_report_ts = None
+
     def on_message(client, userdata, msg):
+        nonlocal last_report_ts
         try:
             payload = json.loads(msg.payload.decode())
             if payload.get("model_version") and monitor.model_version and payload["model_version"] != monitor.model_version:
                 logging.warning("model version differs from reference")
-            monitor.add(payload["p_normal"])
+            monitor.add(payload["confidence"])
+            event_ts = float(payload.get("ts", time.time()))
+            if last_report_ts is None:
+                last_report_ts = event_ts
+            if event_ts - last_report_ts < args.every:
+                return
+            last_report_ts = event_ts
             value = monitor.calculate()
             if value:
                 print(f"[MLOPS] PSI={value:.3f} n={len(monitor.values)}", flush=True)
@@ -119,6 +129,7 @@ def main():
         build.add_argument(option, default=argparse.SUPPRESS, type=int if option == "--port" else str)
     monitor_cmd = sub.add_parser("monitor")
     monitor_cmd.add_argument("--window", type=int, default=100)
+    monitor_cmd.add_argument("--every", type=float, default=60.0)
     for option in ("--broker", "--port", "--truck-id", "--reference"):
         monitor_cmd.add_argument(option, default=argparse.SUPPRESS, type=int if option == "--port" else str)
     args = parser.parse_args()
