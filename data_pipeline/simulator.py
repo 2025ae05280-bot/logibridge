@@ -1,74 +1,117 @@
-# data_pipeline/simulator.py
-import sys
-import time
-import json
-import random
+"""Deterministic sensor simulator used by both the live demo and training."""
+
 import argparse
-import paho.mqtt.client as mqtt
+import json
+import os
+import random
+import time
 
-def run_sensor_simulator(anomaly_mode):
-    MQTT_BROKER = "mqtt_broker"
-    MQTT_PORT = 1883
-    CLIENT_ID = "logiedge_truck_sensor_sim"
-    
-    TOPIC_TEMP = "logibridge/sensor/raw/temp"
-    TOPIC_VIB  = "logibridge/sensor/raw/vib"
-    TOPIC_DOOR = "logibridge/sensor/raw/door"
-    
-    try:
-        client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=CLIENT_ID)
-    except AttributeError:
-        client = mqtt.Client(client_id=CLIENT_ID)
-        
-    print(f">> Connecting to local broker at {MQTT_BROKER}:{MQTT_PORT}...")
-    try:
-        client.connect(MQTT_BROKER, MQTT_PORT, keepalive=60)
-        client.loop_start()
-    except Exception as e:
-        print(f"Broker connection failed: {e}")
-        sys.exit(1)
+from common.config import MQTT_HOST, MQTT_PORT, sensor_topic
 
-    step_counter = 0
-    linear_temp_bias = 0.0
-    
+
+class SensorSimulator:
+    def __init__(self, mode="none", truck_id="T01", seed=None, setpoint=4.0, bad_json_rate=0.0, drop_temp_after=None):
+        self.mode = mode
+        self.truck_id = truck_id
+        self.setpoint = float(setpoint)
+        self.random = random.Random(seed)
+        self.bad_json_rate = float(bad_json_rate)
+        self.drop_temp_after = drop_temp_after
+        self.tick = 0
+        self.seq = {"temperature": 0, "vibration": 0, "door": 0}
+        self.door_open = False
+        self.next_door = self.random.randint(300, 900)
+        self.door_close = None
+
+    def _payload(self, stream, ts, value):
+        self.seq[stream] += 1
+        return {"ts": float(ts), "truck_id": self.truck_id, "seq": self.seq[stream], "value": value}
+
+    def step(self, t):
+        """Advance one simulated second and return ``(stream, payload)`` pairs."""
+        self.tick += 1
+        if not self.door_open and self.tick >= self.next_door:
+            self.door_open = True
+            self.door_close = self.tick + self.random.randint(30, 120)
+        elif self.door_open and self.tick >= self.door_close:
+            self.door_open = False
+            self.next_door = self.tick + self.random.randint(300, 900)
+
+        if self.mode == "temp_drift":
+            bias = min(2.5, self.tick / 60.0)
+        elif self.mode == "combined":
+            bias = min(6.0, self.tick / 60.0)
+        elif self.mode == "cooling_fault":
+            bias = -min(3.5, self.tick / 60.0)
+        else:
+            bias = 0.0
+        if self.door_open:
+            bias += self.random.uniform(0.5, 1.5)
+        temp = self.setpoint + bias + self.random.gauss(0.0, 0.35)
+        if self.random.random() < 0.005:
+            temp += self.random.choice((-1.0, 1.0))
+
+        result = [] if self.drop_temp_after is not None and self.tick >= self.drop_temp_after else [("temperature", self._payload("temperature", t, round(temp, 4)))]
+        if self.tick % 2 == 0:
+            vibration = self.random.gauss(1.2, 0.15) if self.mode in ("vibration", "combined") else self.random.gauss(0.45, 0.05)
+            result.append(("vibration", self._payload("vibration", t, round(max(0.001, vibration), 4))))
+        if self.door_open or (self.door_close is not None and self.tick == self.door_close):
+            result.append(("door", self._payload("door", t, "OPEN" if self.door_open else "CLOSE")))
+        return result
+
+
+def _connect(client, host, port):
+    delay = 2
+    for attempt in range(5):
+        try:
+            client.connect(host, port, keepalive=60)
+            return
+        except Exception:
+            if attempt == 4:
+                raise
+            time.sleep(delay)
+            delay = min(16, delay * 2)
+
+
+def run_sensor_simulator(args):
+    import paho.mqtt.client as mqtt
+
+    client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=f"sim-{args.truck_id}")
+    _connect(client, args.broker, args.port)
+    client.loop_start()
+    sim = SensorSimulator(args.anomaly, args.truck_id, args.seed, args.setpoint, args.bad_json_rate, args.drop_temp_after)
     try:
-        while True:
-            step_counter += 1
-            current_time = time.time()
-            has_temp_fault = anomaly_mode in ['temp_drift', 'combined']
-            has_vib_fault  = anomaly_mode in ['vibration', 'combined']
-            
-            # 1. Temp Stream (1 Hz)
-            if has_temp_fault:
-                linear_temp_bias += 0.08
-                temp_reading = random.normalvariate(4.0 + linear_temp_bias, 0.3)
-            else:
-                temp_reading = random.normalvariate(4.0, 0.3)
-            client.publish(TOPIC_TEMP, json.dumps({"timestamp": current_time, "value": round(temp_reading, 4)}), qos=0)
-            
-            # 2. Vibration RMS Stream (0.5 Hz -> every 2 ticks)
-            if step_counter % 2 == 0:
-                vib_reading = random.normalvariate(1.2, 0.15) if has_vib_fault else random.normalvariate(0.45, 0.05)
-                vib_reading = max(0.001, vib_reading)
-                client.publish(TOPIC_VIB, json.dumps({"timestamp": current_time, "value": round(vib_reading, 4)}), qos=0)
-                
-            # 3. Door Event
-            door_payload = None
-            if step_counter == 60: door_payload = {"timestamp": current_time, "event": "OPEN"}
-            elif step_counter == 75: door_payload = {"timestamp": current_time, "event": "CLOSE"}
-            if door_payload: client.publish(TOPIC_DOOR, json.dumps(door_payload), qos=1)
-                
-            sys.stdout.write(f"\r[Tick {step_counter:04d}] Temp: {temp_reading:6.2f}°C")
-            sys.stdout.flush()
-            time.sleep(1.0)
+        for tick in range(args.duration or 2**31):
+            for stream, payload in sim.step(float(tick)):
+                data = json.dumps(payload)
+                if args.bad_json_rate and sim.random.random() < args.bad_json_rate:
+                    data = "{bad-json"
+                client.publish(sensor_topic(args.truck_id, stream), data, qos=1)
+            time.sleep(1.0 / args.fast)
     except KeyboardInterrupt:
-        print("\nHalting simulator safely...")
+        pass
     finally:
         client.loop_stop()
         client.disconnect()
 
-if __name__ == "__main__":
+
+def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--anomaly', choices=['none', 'temp_drift', 'vibration', 'combined'], default='none')
+    parser.add_argument("--anomaly", choices=["none", "temp_drift", "vibration", "combined", "cooling_fault"], default=os.getenv("SIM_ANOMALY", "none"))
+    parser.add_argument("--truck-id", default="T01")
+    parser.add_argument("--broker", default=os.getenv("MQTT_HOST", MQTT_HOST))
+    parser.add_argument("--port", type=int, default=MQTT_PORT)
+    parser.add_argument("--seed", type=int)
+    parser.add_argument("--duration", type=int, default=0, help="simulated seconds; 0 runs until interrupted")
+    parser.add_argument("--fast", type=float, default=1.0, help="simulated seconds per wall-clock second")
+    parser.add_argument("--setpoint", type=float, default=4.0)
+    parser.add_argument("--drop-temp-after", type=float, default=None)
+    parser.add_argument("--bad-json-rate", type=float, default=0.0)
     args = parser.parse_args()
-    run_sensor_simulator(args.anomaly)
+    if args.fast <= 0 or not 0 <= args.bad_json_rate <= 1:
+        parser.error("--fast must be positive and --bad-json-rate must be between 0 and 1")
+    run_sensor_simulator(args)
+
+
+if __name__ == "__main__":
+    main()

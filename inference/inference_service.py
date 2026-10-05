@@ -1,127 +1,149 @@
-# inference/inference_service.py
-import os
-import sys
+"""MQTT wiring for the shared feature extractor and TFLite model."""
+
 import json
+import logging
+import os
+import threading
+import time
+
 import numpy as np
-import paho.mqtt.client as mqtt
-import tflite_runtime.interpreter as tflite
 
-MODEL_PATH = os.getenv("MODEL_PATH", "/opt/logibridge/model.tflite")
-STATS_PATH = "training_stats.npy"
+from common.config import ALERT_DB, MODEL_PATH, MODEL_VERSION, MQTT_HOST, MQTT_PORT, SETPOINT_C, STATS_PATH, TRUCK_ID, UPLINK_HOST, topic
+from data_pipeline.preprocessing import WindowFeatureExtractor
+from inference.alert_store import AlertStore
+from inference.decision import Debouncer
+from inference.engine import ModelRunner
+from inference.sync_worker import SyncWorker
 
-if not os.path.exists(STATS_PATH):
-    print(f"[FATAL] Missing {STATS_PATH} inside /app folder.")
-    sys.exit(1)
+log = logging.getLogger("logibridge.inference")
+LABELS = ("NORMAL", "WARNING", "CRITICAL")
 
-norm = np.load(STATS_PATH, allow_pickle=True).item()
-m, s = norm["mean"], norm["std"]
 
-print(f">> Initializing TFLite Core with model: {MODEL_PATH}")
-interpreter = tflite.Interpreter(model_path=MODEL_PATH)
-interpreter.allocate_tensors()
-input_details = interpreter.get_input_details()
-output_details = interpreter.get_output_details()
+class InferenceService:
+    def __init__(self, runner, truck_id=TRUCK_ID, setpoint=SETPOINT_C, alert_db=ALERT_DB):
+        self.runner = runner
+        self.truck_id = truck_id
+        self.setpoint = setpoint
+        self.extractor = WindowFeatureExtractor()
+        self.decision = Debouncer()
+        self.store = AlertStore(alert_db)
+        now = time.time()
+        self.last_seen = {"temperature": now, "vibration": now}
+        self.last_seq = {}
+        self.bad_messages = 0
+        self.client = None
+        self.previous_final = 0
+        self.faults = set()
 
-def execute_edge_inference(feature_vector, raw_temp):
-    # Safely index into the first list element [0] before reading the matrix keys
-    expected_shape = input_details[0]['shape']
-    raw_features = np.array(feature_vector, dtype=np.float32).reshape(expected_shape)
-    
-    std_safe = np.where(s == 0, 1.0, s)
-    scaled = (raw_features - m) / std_safe
-    
-    float_input = scaled.astype(np.float32)
-    interpreter.set_tensor(input_details[0]['index'], float_input)
-    interpreter.invoke()
-    
-    output_tensor = interpreter.get_tensor(output_details[0]['index'])
-    class_id = int(np.argmax(output_tensor))
-    
-    # ⚠️ Rule-Based Edge Safeguard Alignment:
-    # Fulfill explicit cold-chain pharmaceutical safety parameters:
-    # Class 1 (Warning): Temp drifts 1-3°C outside setpoint (4°C target -> >= 5.0°C)
-    # Class 2 (Critical): Temp breach >3°C outside setpoint (>= 7.0°C)
-    if raw_temp >= 7.0:
-        class_id = 2
-        output_tensor = np.array([[0.0, 0.0, 1.0]], dtype=np.float32)
-    elif raw_temp >= 5.0:
-        class_id = 1
-        output_tensor = np.array([[0.0, 1.0, 0.0]], dtype=np.float32)
-    else:
-        class_id = 0
-        output_tensor = np.array([[1.0, 0.0, 0.0]], dtype=np.float32)
-        
-    return class_id, output_tensor
+    def attach(self, client):
+        self.client = client
 
-latest_temp = 4.0
-temp_history = [4.0]
-latest_x = 0.0
-latest_y = 0.0
-latest_z = 1.0
-vib_history = [1.0]
+    def ingest(self, stream, payload):
+        if stream == "door":
+            return
+        try:
+            value = float(payload["value"])
+            ts = float(payload["ts"])
+            seq = int(payload["seq"])
+            if not np.isfinite(value) or not np.isfinite(ts):
+                raise ValueError("non-finite value")
+        except (KeyError, TypeError, ValueError) as exc:
+            self.bad_messages += 1
+            log.warning("dropping invalid %s payload: %s", stream, exc)
+            return
+        previous = self.last_seq.get(stream)
+        if previous is not None and seq > previous + 1:
+            log.warning("%s sequence gap: %s missing", stream, seq - previous - 1)
+        self.last_seq[stream] = seq
+        self.last_seen[stream] = time.time()
+        self.faults.discard(stream)
+        for features in self.extractor.push(stream, ts, value):
+            probs, latency_ms = self.runner.predict(features)
+            previous_final = self.previous_final
+            model_class, final_class, source = self.decision.decide(probs, features[0], self.setpoint)
+            self.previous_final = final_class
+            message = {"ts": ts, "truck_id": self.truck_id, "model_version": MODEL_VERSION, "model_class": model_class, "final_class": final_class, "class": final_class, "source": source, "probs": probs.tolist(), "p_normal": float(probs[0]), "confidence": float(np.max(probs)), "latency_ms": latency_ms, "features": dict(zip(("temp_mean", "temp_std", "temp_roc_c_per_min", "vib_rms", "vib_peak", "vib_kurtosis"), features.tolist()))}
+            self.store.window(ts, self.truck_id, features, probs, final_class)
+            heartbeat = os.getenv("HEARTBEAT_FILE")
+            if heartbeat:
+                with open(heartbeat, "a", encoding="utf-8"):
+                    os.utime(heartbeat, None)
+            if self.client:
+                self.client.publish(topic(self.truck_id, "inference"), json.dumps(message), qos=1)
+            if final_class > 0 and final_class > previous_final:
+                alert_id = self.store.alert(ts, self.truck_id, final_class, LABELS[final_class], source, probs)
+                if self.client:
+                    self.client.publish(topic(self.truck_id, "alerts"), json.dumps({**message, "id": alert_id, "label": LABELS[final_class]}), qos=2)
 
-def on_connect(client, userdata, flags, rc, properties=None):
-    print(">> Connected to Local Edge MQTT Broker successfully. Pipeline Active.")
-    client.subscribe([("logibridge/sensor/raw/temp", 0), ("logibridge/sensor/raw/vib", 0)])
+    def watchdog(self):
+        now = time.time()
+        if self.last_seen["temperature"] and now - self.last_seen["temperature"] > 10 and "temperature" not in self.faults:
+            self.faults.add("temperature")
+            self._fault_alert("temperature stale")
+        if self.last_seen["vibration"] and now - self.last_seen["vibration"] > 20 and "vibration" not in self.faults:
+            self.faults.add("vibration")
+            self._fault_alert("vibration stale")
 
-def on_message(client, userdata, msg):
-    global latest_temp, temp_history, latest_x, latest_y, latest_z, vib_history
+    def _fault_alert(self, reason):
+        log.error("SENSOR_FAULT: %s", reason)
+        alert_id = self.store.alert(time.time(), self.truck_id, 2, "SENSOR_FAULT", "watchdog", [])
+        if self.client:
+            self.client.publish(topic(self.truck_id, "alerts"), json.dumps({"id": alert_id, "truck_id": self.truck_id, "class": 2, "label": "SENSOR_FAULT", "source": "watchdog"}), qos=2)
+
+
+def _connect(client, host, port):
+    delay = 2
+    for attempt in range(5):
+        try:
+            client.connect(host, port, 60)
+            return
+        except Exception:
+            if attempt == 4:
+                raise
+            time.sleep(delay)
+            delay = min(16, delay * 2)
+
+
+def main():
+    import paho.mqtt.client as mqtt
+
+    logging.basicConfig(level=logging.INFO)
+    service = InferenceService(ModelRunner(MODEL_PATH, STATS_PATH))
+    client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=f"inference-{service.truck_id}")
+    service.attach(client)
+    client.will_set(topic(service.truck_id, "status"), json.dumps({"state": "offline", "truck_id": service.truck_id}), qos=1, retain=True)
+
+    def on_connect(c, userdata, flags, reason_code, properties=None):
+        c.subscribe(topic(service.truck_id, "sensors/#"), qos=1)
+        c.publish(topic(service.truck_id, "status"), json.dumps({"state": "online", "truck_id": service.truck_id}), qos=1, retain=True)
+
+    def on_message(c, userdata, msg):
+        stream = msg.topic.rsplit("/", 1)[-1]
+        try:
+            service.ingest(stream, json.loads(msg.payload.decode()))
+        except json.JSONDecodeError:
+            service.bad_messages += 1
+            log.warning("dropping invalid JSON on %s", msg.topic)
+
+    client.on_connect = on_connect
+    client.on_message = on_message
+    _connect(client, MQTT_HOST, MQTT_PORT)
+    client.loop_start()
+    sync = SyncWorker(service.store, UPLINK_HOST, service.truck_id, MQTT_PORT) if UPLINK_HOST else None
+    if sync:
+        sync.start()
     try:
-        payload = json.loads(msg.payload.decode())
-        
-        if msg.topic == "logibridge/sensor/raw/temp":
-            latest_temp = payload.get("value", 4.0)
-            temp_history.append(latest_temp)
-            if len(temp_history) > 10:
-                temp_history.pop(0)
-                
-            feature_vector = [
-                float(latest_temp),
-                float(np.mean(temp_history)),
-                float(latest_x),
-                float(latest_y),
-                float(latest_z),
-                float(np.mean(vib_history))
-            ]
-            
-            class_id, confidence = execute_edge_inference(feature_vector, latest_temp)
-            
-            if class_id == 2:
-                status = "🔴 CRITICAL BREACH"
-            elif class_id == 1:
-                status = "⚠️ WARNING ANOMALY"
-            else:
-                status = "🟢 NORMAL OPERATION"
-                
-            print(f"📊 [INFERENCE] Temp: {latest_temp:.2f}°C | State: {status} | Softmax Profile: {confidence.tolist()}")
+        while True:
+            service.watchdog()
+            time.sleep(1)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        if sync:
+            sync.stop()
+        client.loop_stop()
+        client.disconnect()
 
-        elif msg.topic == "logibridge/sensor/raw/vib":
-            samples = payload.get("samples", [])
-            if samples:
-                last_sample = samples[-1].get("axes", [0.0, 0.0, 1.0])
-                latest_x = last_sample[0] if isinstance(last_sample, list) else last_sample
-                latest_y = last_sample[1] if isinstance(last_sample, list) and len(last_sample) > 1 else last_sample
-                latest_z = last_sample[2] if isinstance(last_sample, list) and len(last_sample) > 2 else last_sample
-                
-                for sample in samples:
-                    axes = sample.get("axes", [0.0, 0.0, 1.0])
-                    mag = np.sqrt(axes[0]**2 + axes[1]**2 + axes[2]**2)
-                    vib_history.append(mag)
-                
-                if len(vib_history) > 100:
-                    vib_history = vib_history[-100:]
 
-    except Exception as e:
-        print(f"[ERROR] Pipeline parsing failure: {e}", file=sys.stderr)
-
-try:
-    client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
-except AttributeError:
-    client = mqtt.Client()
-
-client.on_connect = on_connect
-client.on_message = on_message
-
-print(">> Booting Edge network listening loop... Awaiting sensor telemetry...")
-client.connect("mqtt_broker", 1883, 60)
-client.loop_forever()
+if __name__ == "__main__":
+    main()

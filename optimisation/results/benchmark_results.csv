@@ -1,4 +1,1 @@
-Variant,Mean_Latency_ms,p95_Latency_ms,Size_KB,Accuracy_Pct,Energy_mJ
-M1_FP32_Baseline,2.4,4.1,180.0,98.31,18.5
-M2_PTQ_INT8,0.8,1.2,45.0,97.85,5.2
-M3_Pruned_INT8,0.4,0.6,29.2,96.12,2.8
+variant,mean_latency_ms,p50_latency_ms,p95_latency_ms,p99_latency_ms,size_kb,accuracy,critical_recall,energy_mj,runtime

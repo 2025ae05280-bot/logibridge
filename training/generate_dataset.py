@@ -1,48 +1,59 @@
-# training/generate_dataset.py
-import os
+import csv
+import random
 import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 import numpy as np
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from data_pipeline.simulator import run_sensor_simulator
-from data_pipeline.preprocessing import LogiEdgePreprocessingEngine
 
-# Simulate capturing datasets via modular loops
-def generate_isolated_run(mode, duration_minutes):
-    import random
-    engine = LogiEdgePreprocessingEngine()
-    features = []
-    total_ticks = duration_minutes * 60
-    bias = 0.0
-    
-    for tick in range(total_ticks):
-        has_temp = mode in ['temp_drift', 'combined']
-        has_vib = mode in ['vibration', 'combined']
-        
-        bias += 0.08 if has_temp else 0.0
-        t = random.normalvariate(4.0 + bias, 0.3)
-        v = random.normalvariate(1.2, 0.15) if has_vib else random.normalvariate(0.45, 0.05)
-        
-        engine.process_raw_reading(t, v)
-        if tick >= 30 and tick % 10 == 0:
-            features.append(engine.extract_features())
-    return np.array(features)
+from common.config import REPO_ROOT
+from data_pipeline.preprocessing import WindowFeatureExtractor, save_stats
+from data_pipeline.simulator import SensorSimulator
 
-print(">> Compiling training configurations...")
-X_0 = generate_isolated_run('none', 20)
-X_1 = generate_isolated_run('temp_drift', 15)
-X_2 = generate_isolated_run('combined', 15)
+MODES = (("none", 0), ("temp_drift", 1), ("vibration", 1), ("combined", 2), ("cooling_fault", 2))
 
-# Build calibration base parameters
-ref_mean = np.mean(X_0, axis=0)
-ref_std = np.std(X_0, axis=0)
-ref_std[ref_std == 0.0] = 1e-5
-np.save("data_pipeline/training_stats.npy", {"mean": ref_mean, "std": ref_std})
 
-X_raw = np.vstack([X_0, X_1, X_2])
-y = np.concatenate([np.zeros(len(X_0)), np.ones(len(X_1)), np.ones(len(X_2)) * 2])
+def generate_run(mode, run_id, duration_s=15 * 60):
+    simulator = SensorSimulator(mode, f"T{run_id:02d}", seed=run_id)
+    extractor = WindowFeatureExtractor()
+    rows = []
+    for tick in range(duration_s):
+        for stream, payload in simulator.step(tick):
+            for features in extractor.push(stream, payload["ts"], payload["value"]):
+                rows.append((tick, features))
+    return rows
 
-# Standardize matrix outputs
-X_norm = (X_raw - ref_mean) / ref_std
-shuffler = np.random.permutation(len(X_norm))
-np.savez("training/dataset.npz", X=X_norm[shuffler], y=y[shuffler])
-print(">> Generation complete. Configuration training files saved successfully.")
+
+def main():
+    random.seed(42)
+    np.random.seed(42)
+    all_rows = []
+    clean_stats = None
+    run_number = 0
+    for mode, label in MODES:
+        for run in range(1, 6):
+            run_number += 1
+            rows = generate_run(mode, run_number)
+            if mode == "none" and run == 1:
+                clean = np.asarray([features for ts, features in rows if ts < 600], dtype=np.float32)
+                clean_stats = (clean.mean(axis=0), clean.std(axis=0))
+            split = "train" if run <= 3 else "val" if run == 4 else "test"
+            for ts, features in rows:
+                if mode != "none" and ts < 60:
+                    continue
+                all_rows.append((features, label, f"{mode}-{run}", split))
+    if clean_stats is None:
+        raise RuntimeError("clean stats were not generated")
+    save_stats(REPO_ROOT / "data_pipeline" / "training_stats.npy", *clean_stats)
+    output = REPO_ROOT / "training" / "data" / "dataset.csv"
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with output.open("w", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["temp_mean", "temp_std", "temp_roc_c_per_min", "vib_rms", "vib_peak", "vib_kurtosis", "label", "run_id", "split"])
+        writer.writerows([list(features) + [label, run_id, split] for features, label, run_id, split in all_rows])
+    print(f"wrote {len(all_rows)} windows to {output}")
+
+
+if __name__ == "__main__":
+    main()
