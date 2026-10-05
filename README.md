@@ -44,3 +44,7 @@ pytest
 ```
 
 TensorFlow is only needed for training/conversion. The host benchmark uses the TFLite shim and falls back to `tensorflow.lite`; the inference image uses `tflite-runtime`.
+
+## Submission evidence
+
+Use [docs/SUBMISSION_DATA_COLLECTION.md](docs/SUBMISSION_DATA_COLLECTION.md) to collect reproducible logs, model metrics, benchmark outputs, PSI evidence, Docker layer history, and Ansible idempotency results. Record final measured values in `results/RESULTS.md`.
