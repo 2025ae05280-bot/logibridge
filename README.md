@@ -1,110 +1,92 @@
 # LogiEdge: Intelligent Edge AI Platform for Cold-Chain Logistics
 
-## System Overview
-LogiEdge is an enterprise-grade Edge AI monitoring solution designed for **FreightBridge Logistics Pvt. Ltd.** to protect high-value pharmaceutical cold-chain transport configurations. The platform processes temperature variance trends, mechanical vibration anomalies, and discrete door access updates fully local to the vehicle node. This architecture ensures complete, real-time protection and adherence to strict 90-second safety SLAs, even during extended cellular dead zones across regional transit paths.
+LogiEdge is an on-truck Edge AI pipeline for **FreightBridge Logistics Pvt. Ltd.**'s 85 refrigerated
+trucks. It classifies the cargo compartment as **Normal / Warning / Critical** from cargo temperature,
+compressor vibration and door events, entirely on the truck, and syncs its alert log with the
+operations centre whenever cellular coverage is available.
 
-## Structural Repository Components
-* `scenario_architecture/`: System constraint analysis matrices and high-granularity edge architecture topology diagrams.
-* `hardware/`: Mathematical Roofline evaluations and constraint triangle selection matrices.
-* `data_pipeline/`: Real-time sensor streaming models and feature-level data fusion engines.
-* `training/`: Optimization training suites and INT8 quantization compilation pipelines.
-* `inference/`: Docker sandbox runtime containers optimized for over-the-air (OTA) caching layers.
-* `monitoring/`: Automated population stability index drift warning trackers.
-* `deployment/`: Declarative Ansible infrastructure configuration playbooks.
-* `optimisation/`: 5-metric performance evaluation engines and Pareto chart sets.
-
-
-
-# LogiEdge: Intelligent Edge AI Platform for Cold-Chain Logistics
-
-LogiEdge is a decentralized, localized Edge AI production pipeline built for **FreightBridge Logistics Pvt. Ltd.** to provide real-time cold-chain monitoring across a fleet of 85 refrigerated pharmaceutical trucks. The system operates entirely on-device to continuously classify the compartment state into three operational classes (Normal, Warning, and Critical), ensuring strict compliance with safety frameworks even during extended cellular connectivity gaps in rural transit zones.
-
----
-
-## 📐 Architecture Optimization Metrics
-
-*   **90-Second Thermal SLA:** Decoupled entirely from rural cellular round-trip latencies by hosting a local Eclipse Mosquitto broker and an optimized TFLite interpreter within the vehicle node, maintaining deterministic execution latencies below 100 milliseconds.
-*   **Economic Bandwidth Optimization:** Processes multi-modal sensor telemetry (1 Hz temperature, 500 Hz 3-axis vibration) on-device. Only 1 KB MQTT alert packets leave the truck, cutting annual data transmission costs for the 265-truck fleet scale-up from **₹50.18 Lakhs** down to **under ₹150**.
-*   **Compute-Bound Roofline Classification:** Deployed to a **Raspberry Pi 5 + Hailo-8L co-processor setup (7.5W TDP)** to respect a strict 10W AI power envelope. With an operational intensity of **2.50 FLOP/Byte** exceeding the hardware ridge point of **1.33 FLOP/Byte**, the pipeline is classified as strictly **Compute-Bound** and optimized via compute-focused pruning cycles.
-
----
-
-## 🚀 Step-by-Step Production Execution Runbook
-
-Follow these exact steps inside your Ubuntu WSL2 instance to initialize the machine learning assets, build the container layers, and run the pipeline.
-
-### Step 1: Initialize Host Dependencies and Python Environment
-Ensure Python package managers and mathematical engines are present on your host machine to execute compilation workflows:
-```bash
-sudo apt-get update && sudo apt-get install -y python3-pip python3-numpy python3-scipy
-pip3 install paho-mqtt scikit-learn tensorflow matplotlib --break-system-packages
+```
+simulator.py ──MQTT (local Mosquitto)──▶ inference_service.py ──▶ logibridge/trucks/{id}/inference
+ temp 1 Hz, vib 0.5 Hz, door events       filter → 30 s window / 10 s step     logibridge/trucks/{id}/alerts
+                                          → 6 features → normalise → TFLite    alert_log.jsonl ──uplink──▶ ops centre
+                                                                    │
+                                          drift_monitor.py ◀────────┘ PSI every 60 s
 ```
 
-### Step 2: Generate Dataset and Train the Baseline Model
-Execute the data engineering pipeline to compile data distribution metrics and export the neural network checkpoints:
-```bash
-# 1. Generate the labeled multi-modal cold-chain dataset streams
-python3 training/generate_dataset.py
+## Repository layout
 
-# 2. Train the baseline architecture model checkpoints
-python3 training/train_model.py
+| Path | Contents |
+|---|---|
+| `scenario_architecture/` | Constraint analysis (A1), system architecture diagram (A2) |
+| `hardware/` | Constraint Triangle + Roofline analysis (B1, B2) |
+| `data_pipeline/simulator.py` | Sensor simulator, `--anomaly {none\|temp_drift\|vibration\|combined}` (C1) |
+| `data_pipeline/preprocessing.py` | Filtering, windowed feature extraction, normalisation (C2, C3) |
+| `data_pipeline/normalisation_experiment.py` | Correct vs ±3σ-shifted stats experiment (C2) |
+| `data_pipeline/mqtt_architecture.md` | Topic tree and QoS per topic |
+| `training/` | Dataset generation, M1 training, M2 PTQ, M3 structured pruning + PTQ (D1, F1) |
+| `inference/` | Dockerfile, inference service, deployed `model.tflite` (D2) |
+| `monitoring/` | PSI drift monitor and `reference_dist.json` (E1) |
+| `deployment/logibridge_deploy.yml` | 7-task Ansible OTA playbook (E2) |
+| `optimisation/` | Five-metric benchmark, `results/benchmark_results.csv`, `results/pareto_chart.png` (F2) |
+
+## 1. Setup
+
+```bash
+python3 -m venv .venv && source .venv/bin/activate
+pip install "numpy<2" scipy paho-mqtt psutil matplotlib tensorflow==2.13.1 tensorflow-model-optimization==0.7.5
 ```
 
-### Step 3: Programmatically Compile the Optimized Edge TFLite Asset
-Bypass GPU hardware identification traps by using the TensorFlow programmatic API tool to compile the baseline layer matrix directly into the compact edge format:
+## 2. Data, training and optimisation (run from the repo root)
+
 ```bash
-python3 -c "import tensorflow as tf; model = tf.keras.models.load_model('training/models/base_model.h5'); converter = tf.lite.TFLiteConverter.from_keras_model(model); tflite_model = converter.convert(); open('inference/model.tflite', 'wb').write(tflite_model); print('SUCCESS: model.tflite compiled successfully')"
+python training/generate_dataset.py          # dataset.npz + training_stats.npy (10 min clean Normal)
+python training/train_model.py               # M1 FP32; stops if val accuracy ≤ 88%
+python training/convert_ptq.py               # M2 full INT8 PTQ (200 calibration samples)
+python training/prune_quantise.py            # M3 35% structured unit pruning + INT8
+python optimisation/benchmark.py --tdp 15    # 5 metrics + Class 2 recall → CSV + Pareto chart
+python data_pipeline/normalisation_experiment.py
+
+cp training/models/m3_pruned_int8.tflite inference/model.tflite   # variant chosen for deployment
+python monitoring/drift_monitor.py --build-reference              # 300 clean Normal windows → reference_dist.json
 ```
 
-### Step 4: Group Ingestion Assets and Generate the Pareto Frontier Chart
-Stage your global distribution statistics and map out the performance trade-off visualization curve for the evaluation panel:
-```bash
-# 1. Copy metrics directly into the container context
-cp data_pipeline/training_stats.npy inference/
+## 3. Run the on-truck stack (Docker)
 
-# 2. Generate the high-resolution Pareto Bubble Chart
-python3 -c "import matplotlib.pyplot as plt, numpy as np, os; os.makedirs('optimisation/results', exist_ok=True); plt.figure(figsize=(8,5)); plt.plot([2.4, 0.8, 0.4], [98.31, 97.85, 96.12], 'r--'); plt.scatter([2.4, 0.8, 0.4], [98.31, 97.85, 96.12], s=[900, 225, 146], c=['#1f77b4', '#ff7f0e', '#2ca02c']); plt.savefig('optimisation/results/pareto_chart.png'); print('SUCCESS: Pareto chart generated')"
+```bash
+docker build -f inference/Dockerfile -t logibridge-inference:latest .
+docker compose up -d                          # broker + inference + simulator (mode none)
+docker logs -f inference_engine
+
+ANOMALY=combined docker compose up -d telemetry_simulator   # inject a fault
+ANOMALY=none     docker compose up -d telemetry_simulator   # restore
+
+# Switch model variant without a rebuild
+MODEL_PATH=/models/m2_ptq_int8.tflite docker compose up -d inference_engine
 ```
 
-### Step 5: Initialize the MLOps Drift Profiles and Ansible Deployment Structure
-Stage the base reference profiles for the Population Stability Index daemon and populate local host targets:
-```bash
-# 1. Generate standard reference json distribution bins
-python3 monitoring/drift_monitor.py
+Without Docker: run `mosquitto`, then `python inference/inference_service.py` and
+`python data_pipeline/simulator.py --anomaly none` in two terminals.
 
-# 2. Synchronize assets to the target production run directory
-mkdir -p /opt/logibridge
-cp inference/model.tflite /opt/logibridge/
-cp monitoring/reference_dist.json /opt/logibridge/
+## 4. Drift monitoring demo (E1)
+
+```bash
+python monitoring/drift_monitor.py                       # live: PSI every 60 s over last 100 inferences
+python monitoring/drift_monitor.py --offline-demo        # simulated clean → combined → clean timeline
 ```
 
-### Step 6: Compile Container Layers and Launch the Multi-Service Ecosystem
-Build the unbuffered (`PYTHONUNBUFFERED=1`) Docker image layers and launch the container ecosystem on the dedicated bridge network loop:
+One inference is produced every 10 s of sensor time, so 100 inferences span ~17 min. For a
+demo-length recovery, run the simulator with `--speed 10` (`SPEED=10` with compose).
+
+## 5. OTA layer-cache demo (D2) and Ansible (E2)
+
 ```bash
-# 1. Compile the custom TFLite inference image context
-docker build -t logibridge-inference:latest inference/
+cp training/models/m2_ptq_int8.tflite inference/model.tflite
+docker build -f inference/Dockerfile -t logibridge-inference:latest .   # only the model layer rebuilds
+docker history logibridge-inference:latest
 
-# 2. Purge dead container memory caches and stand up the stack
-docker compose down -v
-docker compose up -d
+ansible-galaxy collection install community.docker && pip install docker
+docker run -d -p 5000:5000 --name registry registry:2
+docker tag logibridge-inference:latest localhost:5000/logibridge-inference:latest
+docker push localhost:5000/logibridge-inference:latest
+ansible-playbook deployment/logibridge_deploy.yml --ask-become-pass   # run twice: 2nd run changed=0
 ```
-
----
-
-## 🔍 Verification and Pipeline Telemetry Audits
-
-Verify system operational health and validate real-time classification metrics under linear temperature anomalies:
-
-*   **Monitor Real-Time Inference Scoring Loops:**
-    ```bash
-    docker logs -f inference_engine
-    ```
-    *Expected Output:* Shows `🟢 NORMAL OPERATION`, transitions seamlessly to `⚠️ WARNING ANOMALY` past 5.0°C, and escalates to `🔴 CRITICAL BREACH` past 7.0°C with an explicit `Softmax Profile` dump matching input tensor vector alignments.
-*   **Audit High-Frequency Sensor Stream Injection:**
-    ```bash
-    docker logs --tail 20 logiedge_simulator
-    ```
-*   **Trace MQTT Message Broker Traffic Logs:**
-    ```bash
-    docker logs logiedge_broker
-    ```

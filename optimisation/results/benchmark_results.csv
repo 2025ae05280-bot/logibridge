@@ -1,4 +1,4 @@
-Variant,Mean_Latency_ms,p95_Latency_ms,Size_KB,Accuracy_Pct,Energy_mJ
-M1_FP32_Baseline,2.4,4.1,180.0,98.31,18.5
-M2_PTQ_INT8,0.8,1.2,45.0,97.85,5.2
-M3_Pruned_INT8,0.4,0.6,29.2,96.12,2.8
+Variant,Mean_Latency_ms,p95_Latency_ms,Size_KB,Accuracy_Pct,Energy_mJ,Class2_Recall_Pct,CPU_Share_Pct,Bench_Wall_s,Pareto_Optimal
+M1_FP32_Baseline,0.0468,0.0486,5.2,100.0,0.058538,100.0,8.34,0.01,True
+M2_PTQ_INT8,0.1162,0.1193,3.38,100.0,0.145246,100.0,8.33,0.024,True
+M3_Pruned_PTQ_INT8,0.1181,0.122,2.95,100.0,0.147497,100.0,8.33,0.024,True

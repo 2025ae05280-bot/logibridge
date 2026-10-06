@@ -1,40 +1,82 @@
 ---
 # deployment/logibridge_deploy.yml
-- name: LogiEdge Fleet Inference Pipeline Automated Deployment Manifest
+# OTA deployment of the LogiEdge inference container to a truck edge node.
+#
+# Requires: ansible-galaxy collection install community.docker   (and `pip install docker`)
+# Local registry (once):  docker run -d -p 5000:5000 --name registry registry:2
+#                         docker tag logibridge-inference:latest localhost:5000/logibridge-inference:latest
+#                         docker push localhost:5000/logibridge-inference:latest
+# Run:  ansible-playbook deployment/logibridge_deploy.yml --ask-become-pass   (run it twice: 2nd run -> changed=0)
+#
+# Idempotency: a second run with no changes reports changed=0 - the container is only
+# stopped when the model, reference distribution or image actually changed, and every
+# task uses a declarative module (or changed_when) that reports real state changes.
+- name: LogiEdge inference OTA deployment
   hosts: localhost
   connection: local
-  gather_facts: no
+  gather_facts: false
+  become: true
+  vars:
+    app_dir: /opt/logibridge
+    registry_image: localhost:5000/logibridge-inference:latest
+    container_name: inference_engine
+    truck_id: FB-TRUCK-001
+    mqtt_host: localhost
+    repo_root: "{{ playbook_dir }}/.."
+
   tasks:
-    - name: 1. Create runtime production directory structure if not present
-      file:
-        path: /opt/logibridge
+    - name: 1. Create /opt/logibridge directory if not present
+      ansible.builtin.file:
+        path: "{{ app_dir }}"
         state: directory
-        mode: '0755'
+        mode: "0755"
 
     - name: 2. Copy new model file to /opt/logibridge/model.tflite
-      copy:
-        src: ../inference/model.tflite
-        dest: /opt/logibridge/model.tflite
-        mode: '0644'
+      ansible.builtin.copy:
+        src: "{{ repo_root }}/inference/model.tflite"
+        dest: "{{ app_dir }}/model.tflite"
+        mode: "0644"
+      register: model_file
 
     - name: 3. Copy updated reference_dist.json
-      copy:
-        src: ../monitoring/reference_dist.json
-        dest: /opt/logibridge/reference_dist.json
-        mode: '0644'
+      ansible.builtin.copy:
+        src: "{{ repo_root }}/monitoring/reference_dist.json"
+        dest: "{{ app_dir }}/reference_dist.json"
+        mode: "0644"
+      register: reference_file
 
-    - name: 4. Stop the running inference container if running
-      shell: "docker stop inference_engine || true"
-      changed_when: false
+    - name: 4. Stop the running inference container if running (only when artefacts changed)
+      community.docker.docker_container:
+        name: "{{ container_name }}"
+        state: stopped
+      when: model_file.changed or reference_file.changed
 
     - name: 5. Pull updated container image from local Docker registry
-      shell: "echo 'Image pull sequence handled successfully'"
-      changed_when: false
+      community.docker.docker_image:
+        name: "{{ registry_image }}"
+        source: pull
+        force_source: true
+      register: image_pull
 
     - name: 6. Start inference container with environment variables
-      shell: "docker rm inference_engine || true && docker run -d --name inference_engine --network host -v /opt/logibridge:/opt/logibridge -e MODEL_PATH=/opt/logibridge/model.tflite logibridge-inference:latest"
-      changed_when: true
+      community.docker.docker_container:
+        name: "{{ container_name }}"
+        image: "{{ registry_image }}"
+        state: started
+        restart_policy: unless-stopped
+        network_mode: host
+        volumes:
+          - "{{ app_dir }}:{{ app_dir }}"
+        env:
+          MODEL_PATH: "{{ app_dir }}/model.tflite"
+          TRUCK_ID: "{{ truck_id }}"
+          MQTT_HOST: "{{ mqtt_host }}"
+          ALERT_LOG_PATH: "{{ app_dir }}/alert_log.jsonl"
+        comparisons:
+          image: strict   # recreate when the pulled image digest changed
 
     - name: 7. Wait 15 seconds and verify container is running
-      shell: "sleep 15 && docker ps --filter name=inference_engine --filter status=running | grep inference_engine"
+      ansible.builtin.shell: "sleep 15 && docker ps -q --filter name=^{{ container_name }}$ --filter status=running"
+      register: container_check
       changed_when: false
+      failed_when: container_check.stdout | trim == ""

@@ -1,3 +1,6 @@
+# On-truck stack: local broker + inference service + sensor simulator.
+# Build the image first:  docker build -f inference/Dockerfile -t logibridge-inference:latest .
+# Change the simulator mode with:  ANOMALY=combined docker compose up -d telemetry_simulator
 services:
   mqtt_broker:
     image: eclipse-mosquitto:2.0
@@ -7,38 +10,30 @@ services:
     volumes:
       - ./config/mosquitto.conf:/mosquitto/config/mosquitto.conf
     restart: unless-stopped
-    networks:
-      - logiedge_net
 
   inference_engine:
     image: logibridge-inference:latest
     container_name: inference_engine
     environment:
-      - MODEL_PATH=/opt/logibridge/model.tflite
-      - PYTHONUNBUFFERED=1
+      - MODEL_PATH=${MODEL_PATH:-/app/model.tflite}
+      - TRUCK_ID=FB-TRUCK-001
+      - MQTT_HOST=mqtt_broker
+      - UPLINK_HOST=${UPLINK_HOST:-}
+      - ALERT_LOG_PATH=/data/alert_log.jsonl
     volumes:
-      - /opt/logibridge:/opt/logibridge
+      - ./training/models:/models:ro      # lets MODEL_PATH=/models/<variant>.tflite switch without rebuild
+      - alert_data:/data
     depends_on:
       - mqtt_broker
     restart: unless-stopped
-    networks:
-      - logiedge_net
 
   telemetry_simulator:
     image: logibridge-inference:latest
     container_name: logiedge_simulator
-    command: ["python", "-u", "data_pipeline/simulator.py", "--anomaly", "temp_drift"]
-    environment:
-      - PYTHONUNBUFFERED=1
-    volumes:
-      - .:/app
-    working_dir: /app
+    command: ["sh", "-c", "python -u data_pipeline/simulator.py --host mqtt_broker --truck-id FB-TRUCK-001 --anomaly ${ANOMALY:-none} --speed ${SPEED:-1}"]
     depends_on:
       - mqtt_broker
     restart: unless-stopped
-    networks:
-      - logiedge_net
 
-networks:
-  logiedge_net:
-    driver: bridge
+volumes:
+  alert_data:
