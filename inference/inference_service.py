@@ -1,16 +1,29 @@
 # inference/inference_service.py
 import os
 import sys
+from pathlib import Path
 import json
 import numpy as np
 import paho.mqtt.client as mqtt
-import tflite_runtime.interpreter as tflite
 
-MODEL_PATH = os.getenv("MODEL_PATH", "/opt/logibridge/model.tflite")
-STATS_PATH = "training_stats.npy"
+try:
+    import tflite_runtime.interpreter as tflite
+except ModuleNotFoundError:
+    import tensorflow as tf
+    tflite = tf.lite
 
-if not os.path.exists(STATS_PATH):
-    print(f"[FATAL] Missing {STATS_PATH} inside /app folder.")
+base_dir = Path(__file__).resolve().parent
+MODEL_PATH = os.getenv("MODEL_PATH", str(base_dir / "model.tflite"))
+STATS_CANDIDATES = [
+    os.getenv("STATS_PATH"),
+    str(base_dir / "training_stats.npy"),
+    str(base_dir.parent / "data_pipeline" / "training_stats.npy"),
+    "training_stats.npy",
+]
+
+STATS_PATH = next((p for p in STATS_CANDIDATES if p and os.path.exists(p)), None)
+if STATS_PATH is None:
+    print("[FATAL] Missing training_stats.npy in the expected locations.")
     sys.exit(1)
 
 norm = np.load(STATS_PATH, allow_pickle=True).item()
