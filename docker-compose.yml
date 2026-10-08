@@ -3,42 +3,72 @@ services:
     image: eclipse-mosquitto:2.0
     container_name: logiedge_broker
     ports:
-      - "1883:1883"
+      - "127.0.0.1:1883:1883"
     volumes:
-      - ./config/mosquitto.conf:/mosquitto/config/mosquitto.conf
+      - ./config/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - broker_data:/mosquitto/data
+    healthcheck:
+      test: ["CMD-SHELL", "mosquitto_sub -h localhost -t '$$SYS/broker/uptime' -C 1 -W 2 >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     restart: unless-stopped
-    networks:
-      - logiedge_net
+    networks: [logiedge_net]
+
+  ops_broker:
+    image: eclipse-mosquitto:2.0
+    container_name: logiedge_ops_broker
+    ports:
+      - "127.0.0.1:1884:1883"
+    volumes:
+      - ./config/ops_broker.conf:/mosquitto/config/mosquitto.conf:ro
+      - ops_broker_data:/mosquitto/data
+    restart: unless-stopped
+    networks: [logiedge_net]
 
   inference_engine:
-    image: logibridge-inference:latest
+    profiles: [dev]
+    build:
+      context: .
+      dockerfile: inference/Dockerfile
     container_name: inference_engine
     environment:
-      - MODEL_PATH=/opt/logibridge/model.tflite
-      - PYTHONUNBUFFERED=1
+      MODEL_PATH: /opt/logibridge/model.tflite
+      STATS_PATH: /opt/logibridge/training_stats.npy
+      ALERT_DB: /opt/logibridge/alerts.db
+      PYTHONUNBUFFERED: "1"
     volumes:
-      - /opt/logibridge:/opt/logibridge
+      - ./inference/model.tflite:/opt/logibridge/model.tflite:ro
+      - ./data_pipeline/training_stats.npy:/opt/logibridge/training_stats.npy:ro
     depends_on:
-      - mqtt_broker
+      mqtt_broker:
+        condition: service_healthy
     restart: unless-stopped
-    networks:
-      - logiedge_net
+    networks: [logiedge_net]
 
   telemetry_simulator:
-    image: logibridge-inference:latest
+    build:
+      context: .
+      dockerfile: inference/Dockerfile
     container_name: logiedge_simulator
-    command: ["python", "-u", "data_pipeline/simulator.py", "--anomaly", "temp_drift"]
+    command: ["python", "-u", "data_pipeline/simulator.py", "--anomaly", "${SIM_ANOMALY:-none}", "--truck-id", "T01", "--fast", "${SIM_FAST:-1}"]
     environment:
-      - PYTHONUNBUFFERED=1
+      PYTHONUNBUFFERED: "1"
+      MQTT_HOST: mqtt_broker
     volumes:
       - .:/app
     working_dir: /app
     depends_on:
-      - mqtt_broker
+      mqtt_broker:
+        condition: service_healthy
     restart: unless-stopped
-    networks:
-      - logiedge_net
+    networks: [logiedge_net]
 
 networks:
   logiedge_net:
+    name: logiedge_net
     driver: bridge
+
+volumes:
+  broker_data:
+  ops_broker_data:

@@ -1,46 +1,78 @@
-# data_pipeline/preprocessing.py
-import os
-import numpy as np
-import scipy.stats as stats
+"""Contract-compatible timestamped feature extraction."""
+
 from collections import deque
+from pathlib import Path
 
-class LogiEdgePreprocessingEngine:
-    def __init__(self, stats_path=None):
-        self.temp_filter_buf = deque(maxlen=5)
-        self.vib_filter_buf = deque(maxlen=5)
-        self.temp_window_buf = deque(maxlen=30)
-        self.vib_window_buf = deque(maxlen=30)
-        
-        self.means = None
-        self.stds = None
-        if stats_path and os.path.exists(stats_path):
-            norm_profile = np.load(stats_path, allow_pickle=True).item()
-            self.means = norm_profile["mean"]
-            self.stds = norm_profile["std"]
+import numpy as np
 
-    def process_raw_reading(self, raw_temp, raw_vib):
-        self.temp_filter_buf.append(raw_temp)
-        self.vib_filter_buf.append(raw_vib)
-        smoothed_temp = sum(self.temp_filter_buf) / len(self.temp_filter_buf)
-        smoothed_vib = sum(self.vib_filter_buf) / len(self.vib_filter_buf)
-        self.temp_window_buf.append(smoothed_temp)
-        self.vib_window_buf.append(smoothed_vib)
-        
-    def is_window_ready(self):
-        return len(self.temp_window_buf) == 30
-        
-    def extract_features(self):
-        t_arr = np.array(self.temp_window_buf)
-        v_arr = np.array(self.vib_window_buf)
-        t_mean = np.mean(t_arr)
-        t_std = np.std(t_arr)
-        t_rate = (t_arr[-1] - t_arr[0]) / 0.5  # Rate over 30s window (0.5 min)
-        v_mean_rms = np.mean(v_arr)
-        v_peak = np.max(v_arr)
-        v_kurt = stats.kurtosis(v_arr)
-        if np.isnan(v_kurt): v_kurt = 0.0
-        return np.array([t_mean, t_std, t_rate, v_mean_rms, v_peak, v_kurt], dtype=np.float32)
+FEATURE_NAMES = ["temp_mean", "temp_std", "temp_roc_c_per_min", "vib_rms", "vib_peak", "vib_kurtosis"]
 
-    def normalize_features(self, raw_vector):
-        if self.means is None or self.stds is None: raise ValueError("Normalization coefficients missing.")
-        return (raw_vector - self.means) / self.stds
+
+class WindowFeatureExtractor:
+    def __init__(self, window_s=30.0, step_s=10.0, ma_len=5):
+        self.window_s = float(window_s)
+        self.step_s = float(step_s)
+        self.temp_filter = deque(maxlen=ma_len)
+        self.vib_filter = deque(maxlen=ma_len)
+        self.samples = {"temperature": deque(), "vibration": deque()}
+        self.next_emit = None
+
+    def _add(self, stream, ts, value):
+        if not np.isfinite(value):
+            raise ValueError(f"non-finite {stream} value")
+        filt = self.temp_filter if stream == "temperature" else self.vib_filter
+        filt.append(float(value))
+        smoothed = float(np.mean(filt))
+        self.samples[stream].append((float(ts), smoothed))
+        cutoff = float(ts) - self.window_s
+        while self.samples[stream] and self.samples[stream][0][0] < cutoff:
+            self.samples[stream].popleft()
+
+    @staticmethod
+    def _kurtosis(values):
+        if len(values) < 4:
+            return 0.0
+        centered = values - np.mean(values)
+        variance = np.mean(centered * centered)
+        return 0.0 if variance == 0 else float(np.mean(centered**4) / variance**2 - 3.0)
+
+    def _features(self):
+        temp = np.asarray([v for _, v in self.samples["temperature"]], dtype=np.float64)
+        vib = np.asarray([v for _, v in self.samples["vibration"]], dtype=np.float64)
+        t = np.asarray([ts for ts, _ in self.samples["temperature"]], dtype=np.float64)
+        slope = 0.0 if len(temp) < 2 or np.ptp(t) == 0 else float(np.polyfit(t, temp, 1)[0] * 60.0)
+        return np.asarray([temp.mean(), temp.std(), slope, vib.mean(), vib.max(), self._kurtosis(vib)], dtype=np.float32)
+
+    def push(self, stream, ts, value):
+        if stream not in self.samples:
+            return []
+        self._add(stream, ts, float(value))
+        if self.next_emit is None:
+            self.next_emit = float(ts) + self.window_s
+        output = []
+        while float(ts) >= self.next_emit:
+            if len(self.samples["temperature"]) >= 25 and len(self.samples["vibration"]) >= 12:
+                output.append(self._features())
+                self.next_emit += self.step_s
+            else:
+                break
+        return output
+
+
+def load_stats(path):
+    stats = np.asarray(np.load(Path(path), allow_pickle=False), dtype=np.float32)
+    if stats.shape != (2, 6):
+        raise ValueError(f"expected stats shape (2, 6), got {stats.shape}")
+    return stats[0], stats[1]
+
+
+def save_stats(path, mean, std):
+    stats = np.asarray([mean, std], dtype=np.float32)
+    if stats.shape != (2, 6):
+        raise ValueError(f"expected stats shape (2, 6), got {stats.shape}")
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    np.save(path, stats)
+
+
+def normalise(x, mean, std, std_floor=1e-3):
+    return (np.asarray(x, dtype=np.float32) - np.asarray(mean, dtype=np.float32)) / np.maximum(np.asarray(std, dtype=np.float32), std_floor)

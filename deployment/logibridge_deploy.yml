@@ -1,40 +1,76 @@
 ---
-# deployment/logibridge_deploy.yml
-- name: LogiEdge Fleet Inference Pipeline Automated Deployment Manifest
-  hosts: localhost
-  connection: local
-  gather_facts: no
+- name: Deploy LogiBridge inference
+  hosts: edge
+  become: true
+  gather_facts: false
+  vars:
+    model_variant: training/models/m2_ptq_int8.tflite
+    image_tag: latest
+    runtime_dir: /opt/logibridge
   tasks:
-    - name: 1. Create runtime production directory structure if not present
-      file:
-        path: /opt/logibridge
+    - name: Ensure runtime directory
+      ansible.builtin.file:
+        path: "{{ runtime_dir }}"
         state: directory
-        mode: '0755'
+        owner: 1000
+        group: 1000
+        mode: "0755"
 
-    - name: 2. Copy new model file to /opt/logibridge/model.tflite
-      copy:
-        src: ../inference/model.tflite
-        dest: /opt/logibridge/model.tflite
-        mode: '0644'
+    - name: Copy model and stats
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../{{ item.src }}"
+        dest: "{{ runtime_dir }}/{{ item.dest }}"
+        owner: 1000
+        group: 1000
+        mode: "0644"
+      loop:
+        - {src: "{{ model_variant }}", dest: model.tflite}
+        - {src: data_pipeline/training_stats.npy, dest: training_stats.npy}
+      register: model_copy
 
-    - name: 3. Copy updated reference_dist.json
-      copy:
-        src: ../monitoring/reference_dist.json
-        dest: /opt/logibridge/reference_dist.json
-        mode: '0644'
+    - name: Copy drift reference
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../monitoring/reference_dist.json"
+        dest: "{{ runtime_dir }}/reference_dist.json"
+        owner: 1000
+        group: 1000
+        mode: "0644"
+      register: ref_copy
 
-    - name: 4. Stop the running inference container if running
-      shell: "docker stop inference_engine || true"
-      changed_when: false
+    - name: Stop changed inference container
+      community.docker.docker_container:
+        name: inference_engine
+        state: stopped
+      when: model_copy.changed or ref_copy.changed
 
-    - name: 5. Pull updated container image from local Docker registry
-      shell: "echo 'Image pull sequence handled successfully'"
-      changed_when: false
+    - name: Pull inference image
+      community.docker.docker_image:
+        name: "localhost:5000/logibridge-inference:{{ image_tag }}"
+        source: pull
 
-    - name: 6. Start inference container with environment variables
-      shell: "docker rm inference_engine || true && docker run -d --name inference_engine --network host -v /opt/logibridge:/opt/logibridge -e MODEL_PATH=/opt/logibridge/model.tflite logibridge-inference:latest"
-      changed_when: true
+    - name: Run inference container
+      community.docker.docker_container:
+        name: inference_engine
+        image: "localhost:5000/logibridge-inference:{{ image_tag }}"
+        state: started
+        restart: "{{ model_copy.changed or ref_copy.changed }}"
+        restart_policy: unless-stopped
+        networks:
+          - name: logiedge_net
+        env:
+          MODEL_PATH: /opt/logibridge/model.tflite
+          STATS_PATH: /opt/logibridge/training_stats.npy
+          TRUCK_ID: "{{ truck_id | default('T01') }}"
+          MQTT_HOST: mqtt_broker
+          MQTT_PORT: "1883"
+        volumes:
+          - "{{ runtime_dir }}:/opt/logibridge:ro"
 
-    - name: 7. Wait 15 seconds and verify container is running
-      shell: "sleep 15 && docker ps --filter name=inference_engine --filter status=running | grep inference_engine"
+    - name: Verify healthy inference container
+      community.docker.docker_container_info:
+        name: inference_engine
+      register: info
+      until: info.container.State.Health.Status == 'healthy'
+      retries: 10
+      delay: 3
       changed_when: false

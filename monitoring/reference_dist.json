@@ -1,4 +1,8 @@
 {
-  "description": "Baseline output distribution across 4 distinct bins ([0,0.25), [0.25,0.5), [0.5,0.75), [0.75,1.0])",
-  "bins": [0.05, 0.05, 0.10, 0.80]
+  "edges": [0.0, 0.25, 0.5, 0.75, 1.0],
+  "bins": [0.05, 0.05, 0.10, 0.80],
+  "proportions": [0.05, 0.05, 0.10, 0.80],
+  "n": 0,
+  "model_version": "m1_fp32",
+  "score": "confidence"
 }

@@ -1,27 +1,7 @@
-# Component B — Hardware Selection and Justification
-## Task B1 — Constraint Triangle Application
+# Hardware justification
 
-### 1. Dominant Constraint Vertex
-The dominant vertex of the Edge AI Constraint Triangle for FreightBridge's cold-chain deployment is Power/Thermal Management (TDP), tightly bounded by Fleet-Scale Unit Cost. Operating within an unventilated vehicle cabin drawing power from a 12V truck battery bus via a DC-DC step-down converter, the hardware stack must respect a rigid 10W AI power budget. 
+The 90-second SLA sets the useful latency budget: after the physical ramp, window lag, and N-of-M confirmation, each inference should be comfortably below one second. A Pi 5 has ample RAM and storage for this small MLP plus the Python/MQTT/SQLite stack. For an 85-truck pilot, the planning costs are ₹12.75 lakh for Pi 5, ₹38.25 lakh for Jetson Orin Nano, and ₹2.98 lakh for STM32H7.
 
-### 2. Comparative Matrix
-* Raspberry Pi 5 + Hailo-8L (~₹15,000 / truck | 7.5W TDP): Fits the strict 10W envelope and balances full-scale 265-truck capitalization metrics comfortably at ₹39.75 Lakhs.
-* Jetson Orin Nano (~₹45,000 / truck | 15W TDP): Fails the power envelope, requiring heavy active structural integration, and driving fleet cap costs to an excessive ₹1.19 Crores.
-* STM32H7 MCU (~₹3,500 / truck | 0.4W TDP): Fails on performance; unable to deploy native Linux, local brokers, Docker container stacks, or sliding feature window buffers.
+Jetson's 7 W mode is valid, but its cost and performance are excessive for a six-feature MLP. STM32H7 has about 2 MB Flash and 1 MB SRAM, enough for the model, but not for the Linux container, broker, OTA, and SQLite runtime required by this project. Hailo-8L would require a compiled HEF; it does not execute this TFLite file directly.
 
-### 3. Conclusion
-The Raspberry Pi 5 + Hailo-8L co-processor setup is selected. The Hailo-8L delivers 13 TOPS of accelerated matrix compute, guaranteeing sub-millisecond execution times that satisfy our real-time 90-second SLA while drawing only 7.5W.
-
-## Task B2 — Arithmetic Intensity and Roofline Analysis
-Standardizing our modeling specifications:
-* Model Compute Load (W): 45 MFLOPs = 45 × 10^6 FLOPs
-* Memory Access Traffic (Q): 18 MB = 18 × 10^6 Bytes
-* Peak Compute Bandwidth (P_max): 16 GFLOP/s (Pi 5 NEON SIMD)
-* Memory Read Bandwidth (B_max): 12 GB/s (LPDDR4X Bus)
-
-### 1. Calculations
-* Operational Arithmetic Intensity (I) = W / Q = (45 × 10^6) / (18 × 10^6) = 2.50 FLOP/Byte
-* Hardware Inherent Ridge Point = P_max / B_max = (16 × 10^9) / (12 × 10^9) = 1.33 FLOP/Byte
-
-### 2. Roofline Classification
-Since our Operational Intensity (2.50) is greater than the Ridge Point (1.33), the model is strictly **Compute-Bound**. Performance is capped by CPU clock speeds rather than bus transfer delays. To reduce execution latency, we must implement compute-focused optimizations like Structured Weight Pruning (removing 35% of low-magnitude filter paths), shifting processing cycles down the compute ceiling without hitting memory bottlenecks.
+The brief's 45 MFLOP estimate is a planning figure. The actual dense model is closer to 1.5 kFLOP per inference, so measured benchmark output—not the planning figure—must drive the final hardware claim.

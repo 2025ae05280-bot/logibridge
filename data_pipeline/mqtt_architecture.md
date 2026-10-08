@@ -1,14 +1,19 @@
-# Component C — MQTT Design & Pipeline Architecture
+# MQTT design and feature-level fusion
 
-## 1. Local and Remote Topic Trees
-* `logibridge/sensor/raw/temp` (Local, QoS 0): High-frequency temperature metrics.
-* `logibridge/sensor/raw/vib` (Local, QoS 0): High-frequency vibration compressor metrics.
-* `logibridge/sensor/raw/door` (Local, QoS 1): Discrete cabin security open/close updates.
-* `logibridge/trucks/{truck_id}/inference` (Remote Uplink, QoS 1): Outbound anomalous alerts.
+## Topic tree
 
-## 2. Rationale & QoS Strategy
-We implement Feature-Level Data Fusion because merging raw modalities at the text layer creates large synchronization issues, while Decision-Level systems miss critical cross-modal patterns. 
+```text
+logibridge/trucks/{truck_id}/
+  sensors/temperature   (QoS 1)
+  sensors/vibration     (QoS 1)
+  sensors/door          (QoS 1)
+  inference             (QoS 1)
+  alerts                (QoS 2)
+  status                (QoS 1, retained, LWT)
+  drift                 (QoS 1)
+ops/trucks/{truck_id}/alerts (QoS 1)
+```
 
-QoS 0 is selected for local raw telemetry to minimize processing overhead on the internal bus, since occasional missing samples are smoothed out by our 5-sample moving average filter. 
+Sensor messages use `{ts, truck_id, seq, value}`. Temperature is 1 Hz and vibration is 0.5 Hz; the extractor aligns them by timestamp inside a 30-second window. QoS 1 preserves readings across transient reconnects, while SQLite remains the durable alert and window record. Alerts use QoS 2 because duplicate delivery is more costly than the extra handshake. Status is retained so a newly connected observer immediately sees liveness.
 
-QoS 1 is strictly applied to the container's outbound uplink topic to ensure at-least-once delivery for critical thermal breaches, guaranteeing that anomalies are safely buffered in the offline SQLite log until verified by the central backend.
+Feature-level fusion is the smallest useful boundary: each modality keeps its native sampling rate, then six reproducible features are combined for one model input. Data-level fusion would require resampling raw streams and increases payload size; decision-level fusion loses cross-modal interactions such as rising temperature plus vibration. Door events stay contextual and do not become a seventh feature until a trained model uses them.
