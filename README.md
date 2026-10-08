@@ -36,6 +36,37 @@ SIM_ANOMALY=combined SIM_FAST=10 docker compose up telemetry_simulator
 
 Set `MODEL_FILE` to a generated TFLite file before starting `inference_engine` to switch variants without replacing the tracked fallback model. Compose persists SQLite alert and door-event custody in the `inference_data` volume and forwards acknowledged records to the local ops broker; set `UPLINK_HOST` to the configured operations endpoint for deployment. Compose binds the lab broker to loopback and enables Mosquitto persistence. The lab config is anonymous for a clean demo; production needs password authentication, ACLs, and TLS.
 
+### Watch readable predictions
+
+Install `jq` on the Ubuntu host (not inside the broker container). As `root`, run:
+
+```bash
+apt-get update
+apt-get install -y jq
+```
+
+As a regular user, use `sudo`:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y jq
+```
+
+Then, while the broker, inference service, and simulator are running, run:
+
+```bash
+docker compose exec -T mqtt_broker mosquitto_sub -h localhost \
+  -t 'logibridge/trucks/T01/inference' |
+jq -r '
+  ["NORMAL", "WARNING", "CRITICAL"] as $labels
+  | . as $m
+  | ($labels[$m.final_class] // "UNKNOWN") as $class
+  | "Prediction: \($class)\nConfidence: \((100 * $m.confidence | round))%\nProbabilities: NORMAL \((100 * $m.probs[0] | round))% | WARNING \((100 * $m.probs[1] | round))% | CRITICAL \((100 * $m.probs[2] | round))%\nTemperature: \($m.features.temp_mean) °C\nLatency: \($m.latency_ms) ms\n"
+'
+```
+
+Each incoming MQTT message is printed in a readable format. Press `Ctrl+C` to stop watching.
+
 ## Verification
 
 ```bash
