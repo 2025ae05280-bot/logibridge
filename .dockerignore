@@ -1,0 +1,12 @@
+.git
+.venv
+**/__pycache__
+training/dataset.npz
+training/models
+optimisation
+reports
+monitoring
+deployment
+scenario_architecture
+hardware
+**/alert_log.*

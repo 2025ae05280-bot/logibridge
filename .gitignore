@@ -4,3 +4,6 @@ __pycache__/
 *.db
 /opt/
 results/tmp/
+**/alert_log.jsonl
+**/alert_log.synced
+.DS_Store
