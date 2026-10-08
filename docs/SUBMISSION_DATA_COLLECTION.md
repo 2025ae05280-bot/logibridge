@@ -41,7 +41,7 @@ Expected outputs:
 - training/models/m1_fp32.keras
 - training/models/m1_fp32.tflite
 - training/models/m2_ptq_int8.tflite
-- training/models/m3_pruned_ptq_int8.tflite
+- training/models/m3_pruned_int8.tflite
 - training/results/metrics.json
 - training/results/confusion_matrix.png
 - results/normalisation_experiment.csv
@@ -116,7 +116,7 @@ docker history --no-trunc logibridge-inference:ota-before | Tee-Object "$evidenc
 Change only the model file used by the final COPY layer, rebuild with a new tag, and restore the tracked fallback afterward:
 
 ~~~powershell
-Copy-Item training/models/m3_pruned_ptq_int8.tflite inference/model.tflite
+Copy-Item training/models/m3_pruned_int8.tflite inference/model.tflite
 docker build -f inference/Dockerfile -t logibridge-inference:ota-after .
 docker history --no-trunc logibridge-inference:ota-after | Tee-Object "$evidence\docker-history-after.log"
 Copy-Item "$evidence\model.tflite.original" inference/model.tflite

@@ -30,6 +30,8 @@ def validation_data(path, mean, std):
 
 
 def benchmark_variant(path, x, y, iterations=200, warmup=10):
+    if len(x) == 0 or len(x) != len(y):
+        raise ValueError("benchmark requires non-empty validation features and matching labels")
     interpreter = make_interpreter(path)
     interpreter.allocate_tensors()
     input_detail = interpreter.get_input_details()[0]
@@ -38,13 +40,7 @@ def benchmark_variant(path, x, y, iterations=200, warmup=10):
     for _ in range(warmup):
         interpreter.set_tensor(input_detail["index"], quantise(sample, input_detail))
         interpreter.invoke()
-    try:
-        import psutil
-        process = psutil.Process(os.getpid())
-        cpu_before = process.cpu_times()
-    except ImportError:
-        process = None
-        cpu_before = os.times()
+    cpu_before = time.process_time_ns()
     started = time.perf_counter_ns()
     latencies = []
     for _ in range(iterations):
@@ -53,8 +49,11 @@ def benchmark_variant(path, x, y, iterations=200, warmup=10):
         interpreter.invoke()
         latencies.append((time.perf_counter_ns() - t0) / 1_000_000.0)
     wall = (time.perf_counter_ns() - started) / 1_000_000_000.0
-    cpu = process.cpu_times() if process else os.times()
-    cpu_fraction = max(0.0, (cpu.user + cpu.system - cpu_before.user - cpu_before.system) / max(wall * max(1, os.cpu_count() or 1), 1e-9))
+    cpu_seconds = (time.process_time_ns() - cpu_before) / 1_000_000_000.0
+    cpu_fraction = max(
+        0.0,
+        cpu_seconds / max(wall * max(1, os.cpu_count() or 1), 1e-9),
+    )
     predictions = []
     for sample in x:
         interpreter.set_tensor(input_detail["index"], quantise(sample.reshape(input_detail["shape"]), input_detail))
@@ -64,7 +63,39 @@ def benchmark_variant(path, x, y, iterations=200, warmup=10):
     mean_latency = float(np.mean(latencies))
     laptop_tdp_w = float(os.getenv("LAPTOP_TDP_W", "45"))
     energy = laptop_tdp_w * cpu_fraction * mean_latency / 1000.0 * 1000.0
-    return {"mean_latency_ms": mean_latency, "p50_latency_ms": float(np.percentile(latencies, 50)), "p95_latency_ms": float(np.percentile(latencies, 95)), "p99_latency_ms": float(np.percentile(latencies, 99)), "size_kb": os.path.getsize(path) / 1024.0, "accuracy": float(np.mean(predictions == y)), "critical_recall": float(np.sum((predictions == 2) & (y == 2)) / max(1, np.sum(y == 2))), "energy_mj": energy, "runtime": _runtime_name()}
+    critical_count = int(np.sum(y == 2))
+    if critical_count == 0:
+        raise ValueError("held-out validation set has no Critical examples")
+    return {"mean_latency_ms": mean_latency, "p50_latency_ms": float(np.percentile(latencies, 50)), "p95_latency_ms": float(np.percentile(latencies, 95)), "p99_latency_ms": float(np.percentile(latencies, 99)), "size_kb": os.path.getsize(path) / 1024.0, "accuracy": float(np.mean(predictions == y)), "critical_recall": float(np.sum((predictions == 2) & (y == 2)) / critical_count), "energy_mj": energy, "runtime": _runtime_name()}
+
+
+def pareto_front(rows):
+    """Mark variants not dominated on latency, size, and validation accuracy."""
+    for candidate in rows:
+        candidate["pareto_optimal"] = not any(
+            other is not candidate
+            and other["mean_latency_ms"] <= candidate["mean_latency_ms"]
+            and other["size_kb"] <= candidate["size_kb"]
+            and other["accuracy"] >= candidate["accuracy"]
+            and (
+                other["mean_latency_ms"] < candidate["mean_latency_ms"]
+                or other["size_kb"] < candidate["size_kb"]
+                or other["accuracy"] > candidate["accuracy"]
+            )
+            for other in rows
+        )
+    eligible = [
+        row for row in rows
+        if row["accuracy"] > 0.88 and row["critical_recall"] > 0.95
+    ]
+    recommended = min(
+        eligible,
+        key=lambda row: (row["mean_latency_ms"], row["size_kb"], -row["accuracy"]),
+        default=None,
+    )
+    for row in rows:
+        row["recommended"] = row is recommended
+    return [row for row in rows if row["pareto_optimal"]]
 
 
 def write_chart(csv_path, chart_path):
@@ -78,15 +109,27 @@ def write_chart(csv_path, chart_path):
     accuracy = np.asarray([float(r["accuracy"]) for r in rows])
     latency = np.asarray([float(r["mean_latency_ms"]) for r in rows])
     size = np.asarray([float(r["size_kb"]) for r in rows])
-    best = int(np.lexsort((latency, -accuracy))[0])
+    pareto = np.asarray([r["pareto_optimal"].lower() == "true" for r in rows])
+    recommended = np.asarray([r["recommended"].lower() == "true" for r in rows])
     fig, axes = plt.subplots(1, 2, figsize=(10, 4))
     for index, (x, label) in enumerate(((latency, "Mean latency (ms)"), (size, "Model size (KB)"))):
-        axes[index].scatter(x, accuracy)
+        axes[index].scatter(x[~pareto], accuracy[~pareto], label="dominated")
+        axes[index].scatter(x[pareto], accuracy[pareto], label="Pareto optimal")
         for i, row in enumerate(rows):
             axes[index].annotate(row["variant"], (x[i], accuracy[i]))
-        axes[index].scatter([x[best]], [accuracy[best]], marker="*", s=160, label="recommended")
+        if pareto.sum() > 1:
+            order = np.argsort(x[pareto])
+            axes[index].plot(x[pareto][order], accuracy[pareto][order], linestyle="--", alpha=0.5)
+        if recommended.any():
+            axes[index].scatter(
+                x[recommended],
+                accuracy[recommended],
+                marker="*",
+                s=180,
+                label="recommended (passes safety gates)",
+            )
         axes[index].set_xlabel(label)
-        axes[index].set_ylabel("Test accuracy")
+        axes[index].set_ylabel("Held-out validation accuracy")
         axes[index].legend()
     fig.tight_layout()
     fig.savefig(chart_path, dpi=160)
@@ -101,13 +144,18 @@ def main():
     x, y = validation_data(REPO_ROOT / "training" / "data" / "dataset.csv", mean, std)
     model_dir = REPO_ROOT / "training" / "models"
     rows = []
-    for variant, filename in (("m1_fp32", "m1_fp32.tflite"), ("m2_ptq_int8", "m2_ptq_int8.tflite"), ("m3_pruned_ptq_int8", "m3_pruned_ptq_int8.tflite")):
+    for variant, filename in (("m1_fp32", "m1_fp32.tflite"), ("m2_ptq_int8", "m2_ptq_int8.tflite"), ("m3_pruned_int8", "m3_pruned_int8.tflite")):
         path = model_dir / filename
-        if path.exists():
-            rows.append({"variant": variant, **benchmark_variant(path, x, y, args.iterations)})
+        if not path.is_file():
+            raise FileNotFoundError(
+                f"required benchmark variant {variant} is missing: {path}; "
+                "generate all model variants before benchmarking"
+            )
+        rows.append({"variant": variant, **benchmark_variant(path, x, y, args.iterations)})
+    pareto_front(rows)
     output = REPO_ROOT / "optimisation" / "results" / "benchmark_results.csv"
     output.parent.mkdir(parents=True, exist_ok=True)
-    fields = ["variant", "mean_latency_ms", "p50_latency_ms", "p95_latency_ms", "p99_latency_ms", "size_kb", "accuracy", "critical_recall", "energy_mj", "runtime"]
+    fields = ["variant", "mean_latency_ms", "p50_latency_ms", "p95_latency_ms", "p99_latency_ms", "size_kb", "accuracy", "critical_recall", "energy_mj", "runtime", "pareto_optimal", "recommended"]
     with output.open("w", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fields)
         writer.writeheader()

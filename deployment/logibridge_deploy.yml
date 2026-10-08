@@ -60,11 +60,13 @@
         env:
           MODEL_PATH: /opt/logibridge/model.tflite
           STATS_PATH: /opt/logibridge/training_stats.npy
+          ALERT_DB: /opt/logibridge/alerts.db
           TRUCK_ID: "{{ truck_id | default('T01') }}"
           MQTT_HOST: mqtt_broker
           MQTT_PORT: "1883"
+          UPLINK_HOST: "{{ uplink_host | default('ops_broker') }}"
         volumes:
-          - "{{ runtime_dir }}:/opt/logibridge:ro"
+          - "{{ runtime_dir }}:/opt/logibridge:rw"
 
     - name: Verify healthy inference container
       community.docker.docker_container_info:

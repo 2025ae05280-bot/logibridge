@@ -6,7 +6,7 @@ def make_interpreter(path):
         from tflite_runtime.interpreter import Interpreter
     except ImportError:
         try:
-            from tensorflow.lite import Interpreter
+            from tensorflow.lite.python.interpreter import Interpreter
         except ImportError as exc:
             raise ImportError("Install tflite-runtime in the container or tensorflow on the host") from exc
     return Interpreter(model_path=str(path))

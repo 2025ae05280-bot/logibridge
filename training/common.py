@@ -1,5 +1,6 @@
 # training/common.py
 """Helpers shared by training, conversion, benchmarking and the experiments."""
+import csv
 import os
 import sys
 
@@ -7,25 +8,46 @@ import numpy as np
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.append(ROOT)
-from data_pipeline.preprocessing import load_training_stats
+from data_pipeline.preprocessing import load_stats, normalise
 
-DATASET_PATH = os.path.join(ROOT, "training", "dataset.npz")
+DATASET_PATH = os.path.join(ROOT, "training", "data", "dataset.csv")
 STATS_PATH = os.path.join(ROOT, "data_pipeline", "training_stats.npy")
 MODELS_DIR = os.path.join(ROOT, "training", "models")
 CLASS_NAMES = ["Normal", "Warning", "Critical"]
 
-M1_KERAS = os.path.join(MODELS_DIR, "m1_fp32.h5")
+M1_KERAS = os.path.join(MODELS_DIR, "m1_fp32.keras")
 M1_TFLITE = os.path.join(MODELS_DIR, "m1_fp32.tflite")
 M2_TFLITE = os.path.join(MODELS_DIR, "m2_ptq_int8.tflite")
 M3_TFLITE = os.path.join(MODELS_DIR, "m3_pruned_int8.tflite")
+FEATURE_NAMES = (
+    "temp_mean",
+    "temp_std",
+    "temp_roc_c_per_min",
+    "vib_rms",
+    "vib_peak",
+    "vib_kurtosis",
+)
 
 
 def load_dataset(stats_path=STATS_PATH):
     """Returns normalised (X_train, y_train, X_val, y_val)."""
-    d = np.load(DATASET_PATH)
-    mean, std = load_training_stats(stats_path)
-    norm = lambda X: ((X - mean) / std).astype(np.float32)
-    return norm(d["X_train"]), d["y_train"], norm(d["X_val"]), d["y_val"]
+    mean, std = load_stats(stats_path)
+    with open(DATASET_PATH, newline="") as handle:
+        rows = list(csv.DictReader(handle))
+
+    splits = {}
+    for split in ("train", "val"):
+        selected = [row for row in rows if row["split"] == split]
+        features = np.asarray(
+            [[float(row[name]) for name in FEATURE_NAMES] for row in selected],
+            dtype=np.float32,
+        )
+        labels = np.asarray([int(row["label"]) for row in selected], dtype=np.int64)
+        splits[split] = normalise(features, mean, std), labels
+
+    train_x, train_y = splits["train"]
+    val_x, val_y = splits["val"]
+    return train_x, train_y, val_x, val_y
 
 
 def make_interpreter(model_path, num_threads=1):

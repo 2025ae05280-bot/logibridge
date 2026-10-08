@@ -34,7 +34,7 @@ docker compose --profile dev up --build
 SIM_ANOMALY=combined SIM_FAST=10 docker compose up telemetry_simulator
 ```
 
-Compose binds the lab broker to loopback and enables Mosquitto persistence. The lab config is anonymous for a clean demo; production needs password authentication, ACLs, and TLS.
+Set `MODEL_FILE` to a generated TFLite file before starting `inference_engine` to switch variants without replacing the tracked fallback model. Compose persists SQLite alert and door-event custody in the `inference_data` volume and forwards acknowledged records to the local ops broker; set `UPLINK_HOST` to the configured operations endpoint for deployment. Compose binds the lab broker to loopback and enables Mosquitto persistence. The lab config is anonymous for a clean demo; production needs password authentication, ACLs, and TLS.
 
 ## Verification
 

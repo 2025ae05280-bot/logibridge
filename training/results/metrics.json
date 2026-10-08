@@ -1,0 +1,65 @@
+{
+  "val_accuracy": 1.0,
+  "val": {
+    "0": {
+      "precision": 1.0,
+      "recall": 1.0
+    },
+    "1": {
+      "precision": 1.0,
+      "recall": 1.0
+    },
+    "2": {
+      "precision": 1.0,
+      "recall": 1.0
+    }
+  },
+  "val_confusion_matrix": [
+    [
+      117,
+      0,
+      0
+    ],
+    [
+      0,
+      168,
+      0
+    ],
+    [
+      0,
+      0,
+      168
+    ]
+  ],
+  "test": {
+    "0": {
+      "precision": 0.975,
+      "recall": 1.0
+    },
+    "1": {
+      "precision": 1.0,
+      "recall": 0.9940476190476191
+    },
+    "2": {
+      "precision": 1.0,
+      "recall": 0.9880952380952381
+    }
+  },
+  "test_confusion_matrix": [
+    [
+      117,
+      0,
+      0
+    ],
+    [
+      1,
+      167,
+      0
+    ],
+    [
+      2,
+      0,
+      166
+    ]
+  ]
+}

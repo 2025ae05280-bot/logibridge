@@ -33,16 +33,24 @@ services:
       dockerfile: inference/Dockerfile
     container_name: inference_engine
     environment:
-      MODEL_PATH: /opt/logibridge/model.tflite
+      MODEL_PATH: /models/model.tflite
       STATS_PATH: /opt/logibridge/training_stats.npy
-      ALERT_DB: /opt/logibridge/alerts.db
+      ALERT_DB: /var/lib/logibridge/alerts.db
+      UPLINK_HOST: ${UPLINK_HOST:-ops_broker}
+      MODEL_VERSION: ${MODEL_VERSION:-model}
       PYTHONUNBUFFERED: "1"
     volumes:
-      - ./inference/model.tflite:/opt/logibridge/model.tflite:ro
+      - type: bind
+        source: ${MODEL_FILE:-./inference/model.tflite}
+        target: /models/model.tflite
+        read_only: true
       - ./data_pipeline/training_stats.npy:/opt/logibridge/training_stats.npy:ro
+      - inference_data:/var/lib/logibridge
     depends_on:
       mqtt_broker:
         condition: service_healthy
+      ops_broker:
+        condition: service_started
     restart: unless-stopped
     networks: [logiedge_net]
 
@@ -51,7 +59,7 @@ services:
       context: .
       dockerfile: inference/Dockerfile
     container_name: logiedge_simulator
-    command: ["python", "-u", "data_pipeline/simulator.py", "--anomaly", "${SIM_ANOMALY:-none}", "--truck-id", "T01", "--fast", "${SIM_FAST:-1}"]
+    command: ["python", "-u", "-m", "data_pipeline.simulator", "--anomaly", "${SIM_ANOMALY:-none}", "--truck-id", "T01", "--fast", "${SIM_FAST:-1}"]
     environment:
       PYTHONUNBUFFERED: "1"
       MQTT_HOST: mqtt_broker
@@ -72,3 +80,4 @@ networks:
 volumes:
   broker_data:
   ops_broker_data:
+  inference_data:

@@ -6,4 +6,5 @@ matplotlib==3.9.2
 psutil==6.0.0
 tensorflow==2.15.1
 tensorflow-model-optimization==0.8.0
+tf-keras==2.15.0
 pytest==8.3.3

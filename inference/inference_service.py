@@ -39,22 +39,31 @@ class InferenceService:
         self.client = client
 
     def ingest(self, stream, payload):
-        if stream == "door":
-            return
         try:
-            value = float(payload["value"])
             ts = float(payload["ts"])
             seq = int(payload["seq"])
-            if not np.isfinite(value) or not np.isfinite(ts):
-                raise ValueError("non-finite value")
+            if not np.isfinite(ts):
+                raise ValueError("non-finite timestamp")
+            if stream == "door":
+                value = payload["value"]
+                if value not in ("OPEN", "CLOSE"):
+                    raise ValueError("door value must be OPEN or CLOSE")
+            else:
+                value = float(payload["value"])
+                if not np.isfinite(value):
+                    raise ValueError("non-finite sensor value")
         except (KeyError, TypeError, ValueError) as exc:
             self.bad_messages += 1
             log.warning("dropping invalid %s payload: %s", stream, exc)
             return
-        previous = self.last_seq.get(stream)
-        if previous is not None and seq > previous + 1:
-            log.warning("%s sequence gap: %s missing", stream, seq - previous - 1)
-        self.last_seq[stream] = seq
+        self._note_sequence(stream, seq)
+        if stream == "door":
+            self.store.door_event(ts, self.truck_id, seq, value)
+            return
+        if stream not in ("temperature", "vibration"):
+            self.bad_messages += 1
+            log.warning("dropping unsupported sensor stream %s", stream)
+            return
         self.last_seen[stream] = time.time()
         self.faults.discard(stream)
         for features in self.extractor.push(stream, ts, value):
@@ -74,6 +83,12 @@ class InferenceService:
                 alert_id = self.store.alert(ts, self.truck_id, final_class, LABELS[final_class], source, probs)
                 if self.client:
                     self.client.publish(topic(self.truck_id, "alerts"), json.dumps({**message, "id": alert_id, "label": LABELS[final_class]}), qos=2)
+
+    def _note_sequence(self, stream, seq):
+        previous = self.last_seq.get(stream)
+        if previous is not None and seq > previous + 1:
+            log.warning("%s sequence gap: %s missing", stream, seq - previous - 1)
+        self.last_seq[stream] = seq
 
     def watchdog(self):
         now = time.time()
@@ -143,6 +158,7 @@ def main():
             sync.stop()
         client.loop_stop()
         client.disconnect()
+        service.store.close()
 
 
 if __name__ == "__main__":

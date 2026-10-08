@@ -11,9 +11,8 @@ from training.train_model import load_split
 
 
 def structured_model(base):
-    import tensorflow as tf
-    from tensorflow import keras
-    from tensorflow.keras import layers
+    import tf_keras as keras
+    from tf_keras import layers
 
     hidden = [base.layers[0], base.layers[1]]
     keep = [max(1, int(round(layer.units * 0.65))) for layer in hidden]
@@ -69,7 +68,7 @@ def main():
         raise RuntimeError("structured model validation gate failed")
     model_dir = REPO_ROOT / "training" / "models"
     model.save(model_dir / "m3_pruned.keras")
-    convert(model_dir / "m3_pruned.keras", model_dir / "m3_pruned_ptq_int8.tflite", dataset, mean, std)
+    convert(model_dir / "m3_pruned.keras", model_dir / "m3_pruned_int8.tflite", dataset, mean, std)
 
 
 if __name__ == "__main__":

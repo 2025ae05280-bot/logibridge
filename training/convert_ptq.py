@@ -12,7 +12,20 @@ from data_pipeline.preprocessing import load_stats, normalise
 
 def representative_data(dataset, mean, std):
     with Path(dataset).open(newline="") as handle:
-        rows = [row for row in csv.DictReader(handle) if row["split"] == "train"][:250]
+        rows_by_label = {}
+        for row in csv.DictReader(handle):
+            if row["split"] == "train":
+                rows_by_label.setdefault(row["label"], []).append(row)
+    labels = sorted(rows_by_label)
+    if not labels:
+        raise ValueError("representative dataset has no training rows")
+    quota, extra = divmod(250, len(labels))
+    rows = []
+    for index, label in enumerate(labels):
+        group = rows_by_label[label]
+        count = min(len(group), quota + int(index < extra))
+        indices = np.linspace(0, len(group) - 1, count, dtype=int)
+        rows.extend(group[i] for i in indices)
     for row in rows:
         values = [float(row[name]) for name in ("temp_mean", "temp_std", "temp_roc_c_per_min", "vib_rms", "vib_peak", "vib_kurtosis")]
         yield [normalise(values, mean, std).reshape(1, 6)]

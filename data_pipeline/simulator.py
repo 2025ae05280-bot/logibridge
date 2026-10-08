@@ -8,6 +8,9 @@ import time
 
 from common.config import MQTT_HOST, MQTT_PORT, sensor_topic
 
+TEMP_NOISE_SD = 0.3
+TEMP_DRIFT_PER_READING = 0.08
+
 
 class SensorSimulator:
     def __init__(self, mode="none", truck_id="T01", seed=None, setpoint=4.0, bad_json_rate=0.0, drop_temp_after=None):
@@ -30,24 +33,27 @@ class SensorSimulator:
     def step(self, t):
         """Advance one simulated second and return ``(stream, payload)`` pairs."""
         self.tick += 1
+        door_event = None
         if not self.door_open and self.tick >= self.next_door:
             self.door_open = True
             self.door_close = self.tick + self.random.randint(30, 120)
+            door_event = "OPEN"
         elif self.door_open and self.tick >= self.door_close:
             self.door_open = False
             self.next_door = self.tick + self.random.randint(300, 900)
+            door_event = "CLOSE"
 
         if self.mode == "temp_drift":
-            bias = min(2.5, self.tick / 60.0)
+            bias = self.tick * TEMP_DRIFT_PER_READING
         elif self.mode == "combined":
-            bias = min(6.0, self.tick / 60.0)
+            bias = self.tick * TEMP_DRIFT_PER_READING
         elif self.mode == "cooling_fault":
             bias = -min(3.5, self.tick / 60.0)
         else:
             bias = 0.0
         if self.door_open:
             bias += self.random.uniform(0.5, 1.5)
-        temp = self.setpoint + bias + self.random.gauss(0.0, 0.35)
+        temp = self.setpoint + bias + self.random.gauss(0.0, TEMP_NOISE_SD)
         if self.random.random() < 0.005:
             temp += self.random.choice((-1.0, 1.0))
 
@@ -55,8 +61,8 @@ class SensorSimulator:
         if self.tick % 2 == 0:
             vibration = self.random.gauss(1.2, 0.15) if self.mode in ("vibration", "combined") else self.random.gauss(0.45, 0.05)
             result.append(("vibration", self._payload("vibration", t, round(max(0.001, vibration), 4))))
-        if self.door_open or (self.door_close is not None and self.tick == self.door_close):
-            result.append(("door", self._payload("door", t, "OPEN" if self.door_open else "CLOSE")))
+        if door_event is not None:
+            result.append(("door", self._payload("door", t, door_event)))
         return result
 
 
