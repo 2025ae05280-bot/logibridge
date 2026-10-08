@@ -61,11 +61,21 @@ jq -r '
   ["NORMAL", "WARNING", "CRITICAL"] as $labels
   | . as $m
   | ($labels[$m.final_class] // "UNKNOWN") as $class
-  | "Prediction: \($class)\nConfidence: \((100 * $m.confidence | round))%\nProbabilities: NORMAL \((100 * $m.probs[0] | round))% | WARNING \((100 * $m.probs[1] | round))% | CRITICAL \((100 * $m.probs[2] | round))%\nTemperature: \($m.features.temp_mean) °C\nLatency: \($m.latency_ms) ms\n"
+  | "Prediction: \($class)\nConfidence: \((100 * $m.confidence | round))%\nProbabilities: NORMAL \((100 * $m.probs[0] | round))% | WARNING \((100 * $m.probs[1] | round))% | CRITICAL \((100 * $m.probs[2] | round))%\nTemperature: \((100 * $m.features.temp_mean | round) / 100) °C\nLatency: \($m.latency_ms) ms\n"
 '
 ```
 
-Each incoming MQTT message is printed in a readable format. Press `Ctrl+C` to stop watching.
+Each incoming MQTT message is printed in a readable format, for example:
+
+```text
+Prediction: NORMAL
+Confidence: 58%
+Probabilities: NORMAL 58% | WARNING 21% | CRITICAL 21%
+Temperature: 3.96 °C
+Latency: 0.268448 ms
+```
+
+Values vary with each prediction. Press `Ctrl+C` to stop watching.
 
 ## Verification
 
