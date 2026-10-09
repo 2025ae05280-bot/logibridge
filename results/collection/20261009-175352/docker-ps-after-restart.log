@@ -1,0 +1,5 @@
+NAME                  IMAGE                                 COMMAND                  SERVICE               CREATED          STATUS                            PORTS
+inference_engine      logibridge-main-inference_engine      "python -u -m infere…"   inference_engine      18 minutes ago   Up 8 seconds (health: starting)   
+logiedge_broker       eclipse-mosquitto:2.0                 "/docker-entrypoint.…"   mqtt_broker           19 minutes ago   Up 19 minutes (healthy)           127.0.0.1:1883->1883/tcp
+logiedge_ops_broker   eclipse-mosquitto:2.0                 "/docker-entrypoint.…"   ops_broker            19 minutes ago   Up 19 minutes                     127.0.0.1:1884->1883/tcp
+logiedge_simulator    logibridge-main-telemetry_simulator   "python -u -m data_p…"   telemetry_simulator   2 minutes ago    Up 2 minutes (unhealthy)          

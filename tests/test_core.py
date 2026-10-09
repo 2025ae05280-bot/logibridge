@@ -29,6 +29,20 @@ def test_timestamped_window_extraction():
     assert np.isfinite(output[0]).all()
 
 
+def test_timestamp_reset_restarts_window_schedule():
+    extractor = WindowFeatureExtractor()
+    sim = SensorSimulator(seed=2)
+    for ts in range(45):
+        for stream, payload in sim.step(ts):
+            extractor.push(stream, payload["ts"], payload["value"])
+    sim = SensorSimulator(seed=2)
+    output = []
+    for ts in range(45):
+        for stream, payload in sim.step(ts):
+            output.extend(extractor.push(stream, payload["ts"], payload["value"]))
+    assert output
+
+
 def test_stats_round_trip(tmp_path):
     path = tmp_path / "stats.npy"
     save_stats(path, np.zeros(6), np.ones(6))
