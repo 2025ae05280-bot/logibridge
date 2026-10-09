@@ -92,7 +92,7 @@ def run_sensor_simulator(args):
                 data = json.dumps(payload)
                 if args.bad_json_rate and sim.random.random() < args.bad_json_rate:
                     data = "{bad-json"
-                client.publish(sensor_topic(args.truck_id, stream), data, qos=1)
+                client.publish(sensor_topic(args.truck_id, stream), data, qos=0)
             time.sleep(1.0 / args.fast)
     except KeyboardInterrupt:
         pass

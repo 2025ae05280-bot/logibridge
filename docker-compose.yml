@@ -58,6 +58,7 @@ services:
     build:
       context: .
       dockerfile: inference/Dockerfile
+    image: python:3.11-slim
     container_name: logiedge_simulator
     command: ["python", "-u", "-m", "data_pipeline.simulator", "--anomaly", "${SIM_ANOMALY:-none}", "--truck-id", "T01", "--fast", "${SIM_FAST:-1}"]
     environment:
@@ -71,6 +72,11 @@ services:
         condition: service_healthy
     restart: unless-stopped
     networks: [logiedge_net]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import paho.mqtt"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
 
 networks:
   logiedge_net:

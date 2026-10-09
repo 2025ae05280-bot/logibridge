@@ -89,3 +89,54 @@ TensorFlow is only needed for training/conversion. The host benchmark uses the T
 ## Submission evidence
 
 Use [docs/SUBMISSION_DATA_COLLECTION.md](docs/SUBMISSION_DATA_COLLECTION.md) to collect reproducible logs, model metrics, benchmark outputs, PSI evidence, Docker layer history, and Ansible idempotency results. Record final measured values in `results/RESULTS.md`.
+
+
+
+
+
+python3 -c "
+import paho.mqtt.client as mqtt, json
+def on_message(c, u, m):
+    try:
+        data = json.loads(m.payload.decode())
+        
+        # DYNAMIC FILTER: Check if this payload actually contains ML prediction metrics
+        if 'latency_ms' in data or 'confidence' in data or 'final_class' in data:
+            final_class = data.get('final_class', 0)
+            labels = ['NORMAL', 'WARNING', 'CRITICAL']
+            status_label = labels[final_class] if final_class < len(labels) else 'UNKNOWN'
+            
+            # Color-coded output for presentation visual impact
+            color = '\033[92m' if final_class == 0 else ('\033[93m' if final_class == 1 else '\033[91m')
+            reset = '\033[0m'
+            
+            print(f'📈 [Model Output] Topic: {m.topic} | TS: {data.get(\"ts\")} | Status: {color}{status_label}{reset} | Confidence: {data.get(\"confidence\", 0)*100:.2f}% | Latency: {data.get(\"latency_ms\", 0):.2f}ms')
+    except Exception:
+        pass
+
+client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+client.on_connect = lambda c,u,f,r,p: c.subscribe('#') # Listen to everything, filter dynamically
+client.on_message = on_message
+try:
+    client.connect('127.0.0.1', 1883)
+    print('📢 Dynamic Inference Streaming Dashboard Active. Awaiting predictions...'); client.loop_forever()
+except Exception as e:
+    print('Connection error:', e)
+"
+
+
+
+
+
+
+# 1. Stop your background loop workers quietly
+docker compose --profile dev stop telemetry_simulator inference_engine
+
+# 2. Bounce the broker process to completely clear its memory cache
+docker compose --profile dev restart mqtt_broker
+
+# 3. Relaunch your combined emergency simulation matrix profile
+SIM_ANOMALY=combined docker compose --profile dev start inference_engine telemetry_simulator
+
+# 4. Stream your live prediction pipeline metrics logs
+docker compose --profile dev logs -f inference_engine

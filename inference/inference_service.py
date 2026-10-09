@@ -1,11 +1,12 @@
-"""MQTT wiring for the shared feature extractor and TFLite model."""
+"""MQTT wiring for the shared feature extractor and TFLite model with thread decoupling."""
 
 import json
 import logging
 import os
+import queue
 import threading
 import time
-
+import traceback
 import numpy as np
 
 from common.config import ALERT_DB, MODEL_PATH, MODEL_VERSION, MQTT_HOST, MQTT_PORT, SETPOINT_C, STATS_PATH, TRUCK_ID, UPLINK_HOST, topic
@@ -17,6 +18,9 @@ from inference.sync_worker import SyncWorker
 
 log = logging.getLogger("logibridge.inference")
 LABELS = ("NORMAL", "WARNING", "CRITICAL")
+
+# Thread-safe global queue to bridge MQTT thread and TFLite worker thread
+data_queue = queue.Queue(maxsize=10000)
 
 
 class InferenceService:
@@ -56,6 +60,7 @@ class InferenceService:
             self.bad_messages += 1
             log.warning("dropping invalid %s payload: %s", stream, exc)
             return
+        
         self._note_sequence(stream, seq)
         if stream == "door":
             self.store.door_event(ts, self.truck_id, seq, value)
@@ -64,21 +69,43 @@ class InferenceService:
             self.bad_messages += 1
             log.warning("dropping unsupported sensor stream %s", stream)
             return
+        
         self.last_seen[stream] = time.time()
         self.faults.discard(stream)
+        
         for features in self.extractor.push(stream, ts, value):
             probs, latency_ms = self.runner.predict(features)
+            probs = np.atleast_1d(probs.squeeze()) # Wipes out any extra nested bracket wrappers [[...]] -> [...]
             previous_final = self.previous_final
             model_class, final_class, source = self.decision.decide(probs, features[0], self.setpoint)
             self.previous_final = final_class
-            message = {"ts": ts, "truck_id": self.truck_id, "model_version": MODEL_VERSION, "model_class": model_class, "final_class": final_class, "class": final_class, "source": source, "probs": probs.tolist(), "p_normal": float(probs[0]), "confidence": float(np.max(probs)), "latency_ms": latency_ms, "features": dict(zip(("temp_mean", "temp_std", "temp_roc_c_per_min", "vib_rms", "vib_peak", "vib_kurtosis"), features.tolist()))}
+            
+            message = {
+                "ts": ts, 
+                "truck_id": self.truck_id, 
+                "model_version": MODEL_VERSION, 
+                "model_class": model_class, 
+                "final_class": final_class, 
+                "class": final_class, 
+                "source": source, 
+                "probs": probs.tolist(), 
+                "p_normal": float(probs.flatten()[0]),
+                "confidence": float(np.max(probs).item()),
+                "latency_ms": latency_ms, 
+                "features": dict(zip(("temp_mean", "temp_std", "temp_roc_c_per_min", "vib_rms", "vib_peak", "vib_kurtosis"), features.tolist()))
+            }
+            
             self.store.window(ts, self.truck_id, features, probs, final_class)
+            log.info(f"🔮 [Prediction] Tick: {ts} | Class: {LABELS[final_class]} | Normal Prob: {message['p_normal']:.4f} | Max Conf: {message['confidence']:.4f} | Latency: {latency_ms:.2f}ms")
+            
             heartbeat = os.getenv("HEARTBEAT_FILE")
             if heartbeat:
                 with open(heartbeat, "a", encoding="utf-8"):
                     os.utime(heartbeat, None)
+                    
             if self.client:
                 self.client.publish(topic(self.truck_id, "inference"), json.dumps(message), qos=1)
+                
             if final_class > 0 and final_class > previous_final:
                 alert_id = self.store.alert(ts, self.truck_id, final_class, LABELS[final_class], source, probs)
                 if self.client:
@@ -119,11 +146,25 @@ def _connect(client, host, port):
             delay = min(16, delay * 2)
 
 
+def async_prediction_worker(service):
+    """Background worker thread that pops items out of the queue and computes TFLite predictions."""
+    while True:
+        try:
+            stream, payload = data_queue.get()
+            service.ingest(stream, payload)
+            data_queue.task_done()
+        except Exception as e:
+            # Change this line to print the full error details:
+            log.error("Error in async prediction worker loop: %s\n%s", e, traceback.format_exc())
+
+
+
 def main():
     import paho.mqtt.client as mqtt
 
     logging.basicConfig(level=logging.INFO)
     service = InferenceService(ModelRunner(MODEL_PATH, STATS_PATH))
+    
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=f"inference-{service.truck_id}")
     service.attach(client)
     client.will_set(topic(service.truck_id, "status"), json.dumps({"state": "offline", "truck_id": service.truck_id}), qos=1, retain=True)
@@ -133,20 +174,32 @@ def main():
         c.publish(topic(service.truck_id, "status"), json.dumps({"state": "online", "truck_id": service.truck_id}), qos=1, retain=True)
 
     def on_message(c, userdata, msg):
+        """Asynchronous fast MQTT callback that hands off data straight to the queue."""
         stream = msg.topic.rsplit("/", 1)[-1]
         try:
-            service.ingest(stream, json.loads(msg.payload.decode()))
+            payload = json.loads(msg.payload.decode())
+            # Non-blocking injection into the buffer queue
+            data_queue.put_nowait((stream, payload))
         except json.JSONDecodeError:
             service.bad_messages += 1
             log.warning("dropping invalid JSON on %s", msg.topic)
+        except queue.Full:
+            log.warning("Buffer overflow! Internal processing queue is full, dropping %s", stream)
 
     client.on_connect = on_connect
     client.on_message = on_message
+    
     _connect(client, MQTT_HOST, MQTT_PORT)
     client.loop_start()
+
+    # Start the dedicated worker thread for running calculations out-of-band
+    worker_thread = threading.Thread(target=async_prediction_worker, args=(service,), daemon=True)
+    worker_thread.start()
+
     sync = SyncWorker(service.store, UPLINK_HOST, service.truck_id, MQTT_PORT) if UPLINK_HOST else None
     if sync:
         sync.start()
+        
     try:
         while True:
             service.watchdog()
