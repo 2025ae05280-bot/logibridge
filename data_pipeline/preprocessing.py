@@ -16,6 +16,7 @@ class WindowFeatureExtractor:
         self.vib_filter = deque(maxlen=ma_len)
         self.samples = {"temperature": deque(), "vibration": deque()}
         self.next_emit = None
+        self.last_ts = None
 
     def _add(self, stream, ts, value):
         if not np.isfinite(value):
@@ -46,6 +47,13 @@ class WindowFeatureExtractor:
     def push(self, stream, ts, value):
         if stream not in self.samples:
             return []
+        ts = float(ts)
+        if self.last_ts is not None and ts < self.last_ts - self.window_s:
+            self.temp_filter.clear()
+            self.vib_filter.clear()
+            self.samples = {"temperature": deque(), "vibration": deque()}
+            self.next_emit = None
+        self.last_ts = max(self.last_ts, ts) if self.last_ts is not None else ts
         self._add(stream, ts, float(value))
         if self.next_emit is None:
             self.next_emit = float(ts) + self.window_s

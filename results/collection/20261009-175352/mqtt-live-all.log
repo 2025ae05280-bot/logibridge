@@ -1,0 +1,2 @@
+logibridge/trucks/T01/status {"state": "online", "truck_id": "T01"}
+logibridge/trucks/T01/sensors/temperature {"ts": 778.0, "truck_id": "T01", "seq": 779, "value": 4.3287}

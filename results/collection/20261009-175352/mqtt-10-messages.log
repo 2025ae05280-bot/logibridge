@@ -1,0 +1,10 @@
+logibridge/trucks/T01/status {"state": "online", "truck_id": "T01"}
+logibridge/trucks/T01/sensors/temperature {"ts": 1274.0, "truck_id": "T01", "seq": 1275, "value": 3.9537}
+logibridge/trucks/T01/sensors/temperature {"ts": 1275.0, "truck_id": "T01", "seq": 1276, "value": 4.3455}
+logibridge/trucks/T01/sensors/vibration {"ts": 1275.0, "truck_id": "T01", "seq": 638, "value": 0.4692}
+logibridge/trucks/T01/sensors/temperature {"ts": 1276.0, "truck_id": "T01", "seq": 1277, "value": 4.0595}
+logibridge/trucks/T01/sensors/temperature {"ts": 1277.0, "truck_id": "T01", "seq": 1278, "value": 4.1257}
+logibridge/trucks/T01/sensors/vibration {"ts": 1277.0, "truck_id": "T01", "seq": 639, "value": 0.423}
+logibridge/trucks/T01/sensors/temperature {"ts": 1278.0, "truck_id": "T01", "seq": 1279, "value": 3.9179}
+logibridge/trucks/T01/sensors/temperature {"ts": 1279.0, "truck_id": "T01", "seq": 1280, "value": 4.0687}
+logibridge/trucks/T01/sensors/vibration {"ts": 1279.0, "truck_id": "T01", "seq": 640, "value": 0.4261}
