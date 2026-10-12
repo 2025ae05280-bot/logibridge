@@ -53,6 +53,7 @@ class WindowFeatureExtractor:
             self.vib_filter.clear()
             self.samples = {"temperature": deque(), "vibration": deque()}
             self.next_emit = None
+            self.last_ts = None
         self.last_ts = max(self.last_ts, ts) if self.last_ts is not None else ts
         self._add(stream, ts, float(value))
         if self.next_emit is None:
