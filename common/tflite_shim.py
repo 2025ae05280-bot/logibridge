@@ -6,9 +6,12 @@ def make_interpreter(path):
         from tflite_runtime.interpreter import Interpreter
     except ImportError:
         try:
-            from tensorflow.lite.python.interpreter import Interpreter
-        except ImportError as exc:
-            raise ImportError("Install tflite-runtime in the container or tensorflow on the host") from exc
+            from ai_edge_litert.interpreter import Interpreter
+        except ImportError:
+            try:
+                from tensorflow.lite.python.interpreter import Interpreter
+            except ImportError as exc:
+                raise ImportError("Install tflite-runtime, ai-edge-litert or tensorflow") from exc
     return Interpreter(model_path=str(path))
 
 

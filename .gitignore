@@ -7,3 +7,4 @@ results/tmp/
 **/alert_log.jsonl
 **/alert_log.synced
 .DS_Store
+.deps/

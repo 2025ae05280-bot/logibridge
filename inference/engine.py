@@ -25,7 +25,9 @@ class ModelRunner:
         self.interpreter.set_tensor(self.input["index"], quantise(values, self.input))
         self.interpreter.invoke()
         raw = dequantise(self.interpreter.get_tensor(self.output["index"]), self.output).reshape(-1)
-        if np.any(raw < 0) or raw.sum() <= 0 or not np.isclose(raw.sum(), 1.0, atol=1e-3):
-            raw = np.exp(raw - np.max(raw))
-        probs = raw / raw.sum()
+        raw = np.clip(raw, 0.0, None)
+        if raw.sum() > 0:
+            probs = raw / raw.sum()
+        else:
+            probs = np.full(raw.shape, 1.0 / raw.size)
         return probs.astype(np.float32), (time.perf_counter_ns() - started) / 1_000_000.0

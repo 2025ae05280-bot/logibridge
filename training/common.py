@@ -54,8 +54,11 @@ def make_interpreter(model_path, num_threads=1):
     try:
         import tflite_runtime.interpreter as tflite
     except ModuleNotFoundError:
-        import tensorflow as tf
-        tflite = tf.lite
+        try:
+            import ai_edge_litert.interpreter as tflite
+        except ModuleNotFoundError:
+            import tensorflow as tf
+            tflite = tf.lite
     interp = tflite.Interpreter(model_path=model_path, num_threads=num_threads)
     interp.allocate_tensors()
     return interp

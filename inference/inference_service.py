@@ -9,7 +9,7 @@ import time
 import traceback
 import numpy as np
 
-from common.config import ALERT_DB, MODEL_PATH, MODEL_VERSION, MQTT_HOST, MQTT_PORT, SETPOINT_C, STATS_PATH, TRUCK_ID, UPLINK_HOST, topic
+from common.config import ALERT_DB, MODEL_PATH, MODEL_VERSION, MQTT_HOST, MQTT_PORT, SETPOINT_C, STATS_PATH, TRUCK_ID, UPLINK_HOST, UPLINK_PORT, topic
 from data_pipeline.preprocessing import WindowFeatureExtractor
 from inference.alert_store import AlertStore
 from inference.decision import Debouncer
@@ -196,7 +196,7 @@ def main():
     worker_thread = threading.Thread(target=async_prediction_worker, args=(service,), daemon=True)
     worker_thread.start()
 
-    sync = SyncWorker(service.store, UPLINK_HOST, service.truck_id, MQTT_PORT) if UPLINK_HOST else None
+    sync = SyncWorker(service.store, UPLINK_HOST, service.truck_id, UPLINK_PORT) if UPLINK_HOST else None
     if sync:
         sync.start()
         
