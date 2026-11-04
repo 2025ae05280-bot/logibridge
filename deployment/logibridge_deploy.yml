@@ -68,11 +68,11 @@
         volumes:
           - "{{ runtime_dir }}:/opt/logibridge:rw"
 
-    - name: Verify healthy inference container
+    - name: Wait 15 seconds and verify the inference container is running
       community.docker.docker_container_info:
         name: inference_engine
       register: info
-      until: info.container.State.Health.Status == 'healthy'
-      retries: 10
-      delay: 3
+      until: info.container.State.Running and info.container.State.Health.Status == 'healthy'
+      retries: 6
+      delay: 15
       changed_when: false

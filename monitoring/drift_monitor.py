@@ -134,13 +134,15 @@ def build_reference(args):
 def monitor(args):
     monitor = PSIDriftMonitor(args.reference, args.window)
     last_report_wall = None
+    version_warned = False
 
     def on_message(client, userdata, msg):
-        nonlocal last_report_wall
+        nonlocal last_report_wall, version_warned
         try:
             payload = json.loads(msg.payload.decode())
-            if payload.get("model_version") and monitor.model_version and payload["model_version"] != monitor.model_version:
-                logging.warning("model version differs from reference")
+            if payload.get("model_version") and monitor.model_version and payload["model_version"] != monitor.model_version and not version_warned:
+                logging.warning("model version %s differs from reference %s", payload["model_version"], monitor.model_version)
+                version_warned = True
             monitor.add(payload["confidence"])
             now = time.monotonic()
             if last_report_wall is None:

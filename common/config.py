@@ -17,6 +17,7 @@ MODEL_PATH = env("MODEL_PATH", str(REPO_ROOT / "training" / "models" / "m1_fp32.
 STATS_PATH = env("STATS_PATH", str(REPO_ROOT / "data_pipeline" / "training_stats.npy"))
 MODEL_VERSION = env("MODEL_VERSION", Path(MODEL_PATH).stem)
 UPLINK_HOST = env("UPLINK_HOST", "")
+UPLINK_PORT = int(env("UPLINK_PORT", "1883"))
 
 
 def topic(truck_id, stream):

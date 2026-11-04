@@ -166,3 +166,44 @@ def test_simulator_emits_door_events_only_on_transitions():
     ]
     assert events
     assert all(left != right for left, right in zip(events, events[1:]))
+
+
+def test_windows_resume_quickly_after_a_long_run_restarts():
+    extractor = WindowFeatureExtractor()
+    sim = SensorSimulator(seed=3)
+    for ts in range(1200):
+        for stream, payload in sim.step(ts):
+            extractor.push(stream, payload["ts"], payload["value"])
+    sim = SensorSimulator("combined", seed=4)
+    first_window = None
+    for ts in range(120):
+        for stream, payload in sim.step(ts):
+            if extractor.push(stream, payload["ts"], payload["value"]) and first_window is None:
+                first_window = ts
+    assert first_window is not None and first_window <= 40
+
+
+def test_int8_model_probabilities_are_not_softmaxed_twice():
+    from common.tflite_shim import dequantise, quantise
+    from inference.engine import ModelRunner
+
+    root = Path(__file__).resolve().parents[1]
+    try:
+        runner = ModelRunner(root / "training" / "models" / "m2_ptq_int8.tflite", root / "data_pipeline" / "training_stats.npy")
+    except ImportError:
+        import pytest
+        pytest.skip("no TFLite interpreter installed")
+    sim = SensorSimulator("combined", seed=5)
+    extractor = WindowFeatureExtractor()
+    checked = 0
+    for ts in range(300):
+        for stream, payload in sim.step(ts):
+            for features in extractor.push(stream, payload["ts"], payload["value"]):
+                probs, _ = runner.predict(features)
+                values = normalise(features, runner.mean, runner.std).reshape(tuple(runner.input["shape"]))
+                runner.interpreter.set_tensor(runner.input["index"], quantise(values, runner.input))
+                runner.interpreter.invoke()
+                raw = dequantise(runner.interpreter.get_tensor(runner.output["index"]), runner.output).reshape(-1)
+                assert np.allclose(probs, raw / raw.sum(), atol=1e-6)
+                checked += 1
+    assert checked > 20

@@ -18,6 +18,11 @@ def _runtime_name():
         import tflite_runtime
         return f"tflite-runtime {getattr(tflite_runtime, '__version__', 'unknown')}"
     except ImportError:
+        pass
+    try:
+        from importlib.metadata import version
+        return f"ai-edge-litert {version('ai-edge-litert')}"
+    except Exception:
         import tensorflow as tf
         return f"tensorflow {tf.__version__}"
 

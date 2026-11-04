@@ -18,6 +18,6 @@ ENV MODEL_PATH=/opt/logibridge/model.tflite \
     MQTT_PORT=1883 \
     HEARTBEAT_FILE=/tmp/logibridge-heartbeat
 USER edge
-HEALTHCHECK --interval=30s CMD python -m inference.healthcheck
+HEALTHCHECK --interval=10s --start-period=15s --retries=3 CMD python -m inference.healthcheck
 CMD ["python", "-u", "-m", "inference.inference_service"]
 COPY --chown=edge:edge inference/model.tflite /opt/logibridge/model.tflite

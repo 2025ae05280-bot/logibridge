@@ -37,7 +37,7 @@ services:
       STATS_PATH: /opt/logibridge/training_stats.npy
       ALERT_DB: /var/lib/logibridge/alerts.db
       UPLINK_HOST: ${UPLINK_HOST:-ops_broker}
-      MODEL_VERSION: ${MODEL_VERSION:-model}
+      MODEL_VERSION: ${MODEL_VERSION:-m1_fp32}
       PYTHONUNBUFFERED: "1"
     volumes:
       - type: bind
@@ -58,7 +58,7 @@ services:
     build:
       context: .
       dockerfile: inference/Dockerfile
-    image: python:3.11-slim
+    image: logibridge-simulator:dev
     container_name: logiedge_simulator
     command: ["python", "-u", "-m", "data_pipeline.simulator", "--anomaly", "${SIM_ANOMALY:-none}", "--truck-id", "T01", "--fast", "${SIM_FAST:-1}"]
     environment:

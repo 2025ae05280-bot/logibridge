@@ -8,7 +8,7 @@ echo "============================================="
 docker compose --profile dev down -v
 
 # 2. Boot only the MQTT message brokers first to let them settle
-docker compose --profile dev up -d logiedge_broker logiedge_ops_broker
+docker compose --profile dev up -d mqtt_broker ops_broker
 sleep 3
 
 # 3. Spin up the multi-threaded ML inference engine module
@@ -16,7 +16,7 @@ docker compose --profile dev up -d inference_engine
 sleep 3
 
 # 4. Fire up the data simulation metrics profile stream
-SIM_ANOMALY=combined docker compose --profile dev up -d telemetry_simulator
+SIM_ANOMALY=${SIM_ANOMALY:-none} SIM_FAST=${SIM_FAST:-10} docker compose --profile dev up -d telemetry_simulator
 
 echo "============================================="
 echo "📊 Containers active. Building monitor grid..."
