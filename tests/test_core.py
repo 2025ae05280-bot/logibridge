@@ -207,3 +207,27 @@ def test_int8_model_probabilities_are_not_softmaxed_twice():
                 assert np.allclose(probs, raw / raw.sum(), atol=1e-6)
                 checked += 1
     assert checked > 20
+
+
+def test_fleet_builds_85_trucks_with_faults_only_where_named():
+    from data_pipeline.fleet_simulator import build_fleet, parse_faults
+
+    fleet = build_fleet(85, parse_faults("T07=combined,T23=temp_drift"))
+    assert len(fleet) == 85
+    assert fleet[0].truck_id == "T01" and fleet[-1].truck_id == "T85"
+    faulty = [sim.truck_id for sim in fleet if sim.mode != "none"]
+    assert faulty == ["T07", "T23"]
+
+
+def test_fleet_drift_monitor_keeps_one_psi_window_per_truck(tmp_path):
+    from monitoring.fleet_drift_monitor import FleetDriftMonitor
+
+    reference = tmp_path / "reference.json"
+    save_reference(reference, [0.9] * 300, "test")
+    fleet = FleetDriftMonitor(reference, window=100)
+    for _ in range(100):
+        fleet.add("T01", 0.9)
+        fleet.add("T02", 0.1)
+    results = fleet.calculate()
+    assert results["T01"] == 0.0
+    assert results["T02"] > 0.25

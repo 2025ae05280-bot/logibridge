@@ -10,3 +10,4 @@ deployment
 scenario_architecture
 hardware
 **/alert_log.*
+.deps

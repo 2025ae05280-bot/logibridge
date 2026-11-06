@@ -24,13 +24,14 @@ data_queue = queue.Queue(maxsize=10000)
 
 
 class InferenceService:
-    def __init__(self, runner, truck_id=TRUCK_ID, setpoint=SETPOINT_C, alert_db=ALERT_DB):
+    def __init__(self, runner, truck_id=TRUCK_ID, setpoint=SETPOINT_C, alert_db=ALERT_DB, store=None, model_version=MODEL_VERSION):
         self.runner = runner
         self.truck_id = truck_id
         self.setpoint = setpoint
         self.extractor = WindowFeatureExtractor()
         self.decision = Debouncer()
-        self.store = AlertStore(alert_db)
+        self.store = store if store is not None else AlertStore(alert_db)
+        self.model_version = model_version
         now = time.time()
         self.last_seen = {"temperature": now, "vibration": now}
         self.last_seq = {}
@@ -83,7 +84,7 @@ class InferenceService:
             message = {
                 "ts": ts, 
                 "truck_id": self.truck_id, 
-                "model_version": MODEL_VERSION, 
+                "model_version": self.model_version, 
                 "model_class": model_class, 
                 "final_class": final_class, 
                 "class": final_class, 
