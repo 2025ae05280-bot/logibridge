@@ -56,7 +56,7 @@ class SyncWorker:
                         "probs": json.loads(row[6]),
                     })
                     info = client.publish(
-                        f"ops/trucks/{self.truck_id}/alerts",
+                        f"ops/trucks/{row[2]}/alerts",
                         payload,
                         qos=1,
                     )
@@ -75,7 +75,7 @@ class SyncWorker:
                         "event": row[4],
                     })
                     info = client.publish(
-                        f"ops/trucks/{self.truck_id}/events/door",
+                        f"ops/trucks/{row[2]}/events/door",
                         payload,
                         qos=1,
                     )

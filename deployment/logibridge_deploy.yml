@@ -7,21 +7,23 @@
     model_variant: training/models/m2_ptq_int8.tflite
     image_tag: latest
     runtime_dir: /opt/logibridge
+    runtime_owner: 1000
+    runtime_group: 1000
   tasks:
     - name: Ensure runtime directory
       ansible.builtin.file:
         path: "{{ runtime_dir }}"
         state: directory
-        owner: 1000
-        group: 1000
+        owner: "{{ runtime_owner }}"
+        group: "{{ runtime_group }}"
         mode: "0755"
 
     - name: Copy model and stats
       ansible.builtin.copy:
         src: "{{ playbook_dir }}/../{{ item.src }}"
         dest: "{{ runtime_dir }}/{{ item.dest }}"
-        owner: 1000
-        group: 1000
+        owner: "{{ runtime_owner }}"
+        group: "{{ runtime_group }}"
         mode: "0644"
       loop:
         - {src: "{{ model_variant }}", dest: model.tflite}
@@ -32,15 +34,15 @@
       ansible.builtin.copy:
         src: "{{ playbook_dir }}/../monitoring/reference_dist.json"
         dest: "{{ runtime_dir }}/reference_dist.json"
-        owner: 1000
-        group: 1000
+        owner: "{{ runtime_owner }}"
+        group: "{{ runtime_group }}"
         mode: "0644"
       register: ref_copy
 
-    - name: Stop changed inference container
+    - name: Stop the running inference container if files changed
       community.docker.docker_container:
         name: inference_engine
-        state: stopped
+        state: absent
       when: model_copy.changed or ref_copy.changed
 
     - name: Pull inference image
@@ -55,10 +57,16 @@
         state: started
         restart: "{{ model_copy.changed or ref_copy.changed }}"
         restart_policy: unless-stopped
+        # Podman's Docker-compatible API reports these two fields differently from Docker,
+        # which would make every run look changed; networks and env are still compared.
+        comparisons:
+          network_mode: ignore
+          volumes: ignore
         networks:
           - name: logiedge_net
         env:
           MODEL_PATH: /opt/logibridge/model.tflite
+          MODEL_VERSION: "{{ model_variant | basename | splitext | first }}"
           STATS_PATH: /opt/logibridge/training_stats.npy
           ALERT_DB: /opt/logibridge/alerts.db
           TRUCK_ID: "{{ truck_id | default('T01') }}"

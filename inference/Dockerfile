@@ -20,4 +20,4 @@ ENV MODEL_PATH=/opt/logibridge/model.tflite \
 USER edge
 HEALTHCHECK --interval=10s --start-period=15s --retries=3 CMD python -m inference.healthcheck
 CMD ["python", "-u", "-m", "inference.inference_service"]
-COPY --chown=edge:edge inference/model.tflite /opt/logibridge/model.tflite
+COPY --chown=edge:edge inference/model.tflite inference/MODEL_VERSION /opt/logibridge/
